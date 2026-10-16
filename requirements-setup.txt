@@ -1,0 +1,5 @@
+# One-time setup helpers (token capture + Google sign-in). Not needed by the daily run.
+-r requirements.txt
+google-auth-oauthlib>=1.2
+playwright>=1.47
+pytest>=8.0

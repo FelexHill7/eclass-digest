@@ -1,0 +1,242 @@
+"""Offline tests: a fake eClass drives collect -> diff -> render -> calendar bodies."""
+
+from __future__ import annotations
+
+import copy
+import dataclasses
+import time
+
+import pytest
+
+from eclass_digest import emailer
+from eclass_digest.collect import collect, html_to_text
+from eclass_digest.config import load_config
+from eclass_digest.gcal import event_body
+from eclass_digest.moodle import Moodle, _flatten
+from eclass_digest.state import empty_seen
+from eclass_digest.summarize import build_prompt
+
+BASE = "https://eclass.yorku.ca"
+NOW = int(time.time())
+
+
+def pluginfile(path: str) -> str:
+    return f"{BASE}/webservice/pluginfile.php/{path}?forcedownload=1"
+
+
+CONTENTS = [
+    {"id": 1, "name": "General", "modules": [
+        {"id": 100, "name": "Announcements", "modname": "forum", "instance": 7,
+         "url": f"{BASE}/mod/forum/view.php?id=100"},
+        {"id": 101, "name": "Welcome", "modname": "label", "instance": 1},
+    ]},
+    {"id": 2, "name": "Week 1", "modules": [
+        {"id": 200, "name": "Lecture 1 slides", "modname": "resource", "instance": 3,
+         "url": f"{BASE}/mod/resource/view.php?id=200",
+         "contents": [{"type": "file", "filename": "lec1.pdf", "filepath": "/",
+                       "fileurl": pluginfile("1/mod_resource/content/1/lec1.pdf"),
+                       "filesize": 2_400_000, "timemodified": NOW - 86400,
+                       "mimetype": "application/pdf"}]},
+        {"id": 201, "name": "Assignment 1", "modname": "assign", "instance": 9,
+         "url": f"{BASE}/mod/assign/view.php?id=201"},
+        {"id": 202, "name": "Textbook site", "modname": "url", "instance": 4,
+         "url": f"{BASE}/mod/url/view.php?id=202",
+         "contents": [{"type": "url", "fileurl": "https://example.com/book"}]},
+    ]},
+]
+
+
+class FakeMoodle(Moodle):
+    def __init__(self):
+        super().__init__(BASE, "x" * 32)
+        self.contents = copy.deepcopy(CONTENTS)
+        self.discussions_list = [
+            {"id": 1, "discussion": 50, "subject": "Welcome to EECS 2030", "userfullname": "Prof X",
+             "created": NOW - 3600, "modified": NOW - 3600,
+             "message": "<p>Hi all, see the <a href='https://x.org'>syllabus</a>.</p>"},
+        ]
+
+    def courses(self, classification="inprogress"):
+        return [{"id": 42, "shortname": "EECS2030", "fullname": "Advanced OOP",
+                 "viewurl": f"{BASE}/course/view.php?id=42"}]
+
+    def course_contents(self, course_id):
+        return self.contents
+
+    def forums(self, course_ids):
+        return [{"id": 7, "course": 42, "type": "news", "name": "Announcements"}]
+
+    def discussions(self, forum_id, perpage=10):
+        return self.discussions_list
+
+    def calendar_events(self, course_ids, start, end):
+        return [{"id": 9001, "name": "Assignment 1 is due", "courseid": 42,
+                 "modulename": "assign", "instance": 9, "eventtype": "due",
+                 "timestart": NOW + 2 * 86400, "timeduration": 0, "visible": 1,
+                 "description": "<p>Submit on eClass</p>"}]
+
+
+@pytest.fixture
+def cfg(monkeypatch, tmp_path):
+    monkeypatch.setenv("ECLASS_TOKEN", "x" * 32)
+    monkeypatch.setenv("TIMEZONE", "America/Toronto")
+    return dataclasses.replace(load_config(), state_file=tmp_path / "s.json")
+
+
+def test_flatten():
+    assert _flatten({"events": {"courseids": [3, 4]}, "flag": True}) == {
+        "events[courseids][0]": 3, "events[courseids][1]": 4, "flag": 1}
+
+
+def test_browser_url_strips_token():
+    url = Moodle.browser_url(pluginfile("1/a.pdf") + "&token=secret")
+    assert url == f"{BASE}/pluginfile.php/1/a.pdf"
+
+
+def test_first_run_is_baseline_then_diffs(cfg):
+    moodle = FakeMoodle()
+    digest, seen = collect(moodle, empty_seen(), cfg)
+    assert digest.first_run
+    assert not digest.changed_modules()
+    # Recent announcement still shown on first run, labels skipped
+    assert [a.status for _, a in digest.fresh_announcements()] == ["recent"]
+    assert all(m.modname != "label" for m in digest.courses[0].modules)
+    # Event links to the assignment via (modname, instance) -> cmid
+    assert digest.events[0].url == f"{BASE}/mod/assign/view.php?id=201"
+    assert digest.courses[0].modules[3].url == "https://example.com/book"
+
+    # Day 2: a new slide deck and an updated file and a new announcement
+    moodle.contents[1]["modules"][0]["contents"][0]["timemodified"] = NOW
+    moodle.contents[1]["modules"].append(
+        {"id": 203, "name": "Lecture 2 slides", "modname": "resource", "instance": 5,
+         "url": f"{BASE}/mod/resource/view.php?id=203",
+         "contents": [{"type": "file", "filename": "lec2.pptx", "filepath": "/",
+                       "fileurl": pluginfile("1/mod_resource/content/1/lec2.pptx"),
+                       "filesize": 1000, "timemodified": NOW}]})
+    moodle.discussions_list.insert(0, {
+        "id": 2, "discussion": 51, "subject": "Midterm room change", "userfullname": "Prof X",
+        "created": NOW, "modified": NOW, "message": "<p>Now in CLH A.</p>"})
+
+    digest2, _ = collect(moodle, seen, cfg)
+    assert not digest2.first_run
+    changed = {m.name: m.status for _, m in digest2.changed_modules()}
+    assert changed == {"Lecture 1 slides": "updated", "Lecture 2 slides": "new"}
+    assert [a.subject for _, a in digest2.fresh_announcements()] == ["Midterm room change"]
+
+    html = emailer.render_html(digest2, cfg)
+    assert "Midterm room change" in html and "lec2.pptx" in html
+    assert "token" not in html and "webservice" not in html
+    subject = emailer.subject_line(digest2, cfg)
+    assert "1 announcement" in subject and "2 new/updated items" in subject
+    assert "Assignment 1 is due" in build_prompt(digest2, cfg)
+
+
+def test_calendar_body(cfg):
+    digest, _ = collect(FakeMoodle(), empty_seen(), cfg)
+    body = event_body(digest.events[0], cfg)
+    assert body["summary"] == "EECS2030: Assignment 1 is due"
+    assert body["start"] == body["end"]
+    assert body["transparency"] == "transparent"
+    assert "mod/assign/view.php?id=201" in body["description"]
+
+
+def test_html_to_text_keeps_links():
+    assert html_to_text("<p>See <a href='https://a.b'>this</a></p>") == "See this (https://a.b)"
+
+
+def test_service_account_is_used_when_present(cfg, tmp_path):
+    import json
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from eclass_digest.google_auth import is_service_account, load_credentials
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                            serialization.NoEncryption()).decode()
+    sa = tmp_path / "service_account.json"
+    sa.write_text(json.dumps({
+        "type": "service_account", "project_id": "p", "private_key_id": "1", "private_key": pem,
+        "client_email": "bot@p.iam.gserviceaccount.com", "client_id": "1",
+        "token_uri": "https://oauth2.googleapis.com/token"}))
+    creds = load_credentials(dataclasses.replace(cfg, google_service_account_file=sa,
+                                                 google_service_account_json=""))
+    assert is_service_account(creds)
+    assert creds.service_account_email == "bot@p.iam.gserviceaccount.com"
+
+    with pytest.raises(RuntimeError, match="EMAIL_METHOD=smtp"):
+        emailer.send(dataclasses.replace(cfg, email_method="gmail_api"),
+                     emailer.build_message(cfg, "s", "<p>h</p>", "t"), creds)
+
+
+class FakeCalendar:
+    """Just enough of googleapiclient's Calendar service for sync_calendar."""
+
+    def __init__(self):
+        self.events_by_id: dict = {}
+
+    def events(self):
+        return self
+
+    def insert(self, calendarId, body):
+        self.events_by_id[body["id"]] = body
+        return _Exec({"htmlLink": f"https://calendar.google.com/event?eid={body['id']}"})
+
+    def update(self, calendarId, eventId, body):
+        self.events_by_id[eventId] = body
+        return _Exec({"htmlLink": "x"})
+
+    def delete(self, calendarId, eventId):
+        self.events_by_id.pop(eventId, None)
+        return _Exec({})
+
+
+class _Exec:
+    def __init__(self, result):
+        self.result = result
+
+    def execute(self):
+        return self.result
+
+
+def test_calendar_changes_are_reported(cfg):
+    from eclass_digest.gcal import sync_calendar
+
+    cfg = dataclasses.replace(cfg, gcal_calendar_id="cal")
+    gcal_state: dict = {}
+    fake, moodle = FakeCalendar(), FakeMoodle()
+
+    digest, _ = collect(moodle, empty_seen(), cfg)
+    changes = sync_calendar(None, digest, gcal_state, cfg, service=fake)
+    assert [c.kind for c in changes] == ["added"]
+    assert "eclass9001" in fake.events_by_id
+
+    # Same data again: nothing to report
+    digest, _ = collect(moodle, empty_seen(), cfg)
+    assert sync_calendar(None, digest, gcal_state, cfg, service=fake) == []
+
+    # Due date pushed back a day, plus a brand-new quiz
+    moodle.calendar_events = lambda *a: [
+        {"id": 9001, "name": "Assignment 1 is due", "courseid": 42, "modulename": "assign",
+         "instance": 9, "eventtype": "due", "timestart": NOW + 3 * 86400, "timeduration": 0},
+        {"id": 9002, "name": "Quiz 1 closes", "courseid": 42, "modulename": "quiz",
+         "instance": 11, "eventtype": "close", "timestart": NOW + 5 * 86400, "timeduration": 0}]
+    digest, _ = collect(moodle, empty_seen(), cfg)
+    changes = sync_calendar(None, digest, gcal_state, cfg, service=fake)
+    assert sorted(c.kind for c in changes) == ["added", "moved"]
+    moved = next(c for c in changes if c.kind == "moved")
+    assert moved.previous_start < moved.start
+
+    subject, html, text = emailer.render_calendar_email(changes, cfg)
+    assert subject == "📅 Calendar updated · 1 new deadline, 1 rescheduled"
+    assert "Quiz 1 closes" in html and "View in Calendar" in html
+
+    # Quiz removed from eClass
+    moodle.calendar_events = lambda *a: [
+        {"id": 9001, "name": "Assignment 1 is due", "courseid": 42, "modulename": "assign",
+         "instance": 9, "eventtype": "due", "timestart": NOW + 3 * 86400, "timeduration": 0}]
+    digest, _ = collect(moodle, empty_seen(), cfg)
+    changes = sync_calendar(None, digest, gcal_state, cfg, service=fake)
+    assert [(c.kind, c.title) for c in changes] == [("removed", "EECS2030: Quiz 1 closes")]
+    assert "eclass9002" not in fake.events_by_id

@@ -1,0 +1,12 @@
+# Daily run
+anthropic>=1.15.0
+beautifulsoup4>=4.12
+google-api-python-client>=2.140
+google-auth>=2.34
+markdown>=3.6
+pypdf>=5.0
+python-docx>=1.1
+python-dotenv>=1.0
+python-pptx>=1.0
+requests>=2.32
+tzdata>=2024.1

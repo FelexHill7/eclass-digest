@@ -1,0 +1,16 @@
+# Secrets - never commit these
+.env
+service_account.json
+credentials.json
+token.json
+
+# Your data
+state/
+output/
+downloads/
+logs/
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
