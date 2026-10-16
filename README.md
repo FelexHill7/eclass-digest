@@ -81,7 +81,8 @@ Everything is in `.env`, which the wizard writes for you. See [.env.example](.en
 | Setting | Default | What it does |
 |---|---|---|
 | `DIGEST_TO` | | Where the digest goes |
-| `EXCLUDE_COURSES` | | Skip courses whose name contains any of these (comma-separated) |
+| `INCLUDE_COURSES` | | Also track these courses even if eClass doesn't mark them "in progress" (e.g. `CSSD 3101, 165459`) |
+| `EXCLUDE_COURSES` | | Skip courses whose code or name contains any of these (comma-separated) |
 | `DEADLINE_WINDOW_DAYS` | `14` | How far ahead "Coming up" looks |
 | `NOTIFY_CALENDAR_CHANGES` | `true` | Email when deadlines are added, moved or removed |
 | `SEND_IF_NOTHING_NEW` | `true` | Still email on quiet days |

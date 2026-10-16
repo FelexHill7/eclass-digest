@@ -80,7 +80,9 @@ class FakeMoodle(Moodle):
 def cfg(monkeypatch, tmp_path):
     monkeypatch.setenv("ECLASS_TOKEN", "x" * 32)
     monkeypatch.setenv("TIMEZONE", "America/Toronto")
-    return dataclasses.replace(load_config(), state_file=tmp_path / "s.json")
+    # Ignore personal course filters from a local .env so tests behave the same everywhere.
+    return dataclasses.replace(load_config(), state_file=tmp_path / "s.json",
+                               include_courses=(), exclude_courses=())
 
 
 def test_flatten():
@@ -240,3 +242,27 @@ def test_calendar_changes_are_reported(cfg):
     changes = sync_calendar(None, digest, gcal_state, cfg, service=fake)
     assert [(c.kind, c.title) for c in changes] == [("removed", "EECS2030: Quiz 1 closes")]
     assert "eclass9002" not in fake.events_by_id
+
+
+def test_include_courses_adds_courses_outside_in_progress(cfg):
+    from eclass_digest.collect import tracked_courses
+
+    class TermMoodle(FakeMoodle):
+        def courses(self, classification="inprogress"):
+            current = [{"id": 42, "shortname": "2026_LE_CSSD_F_3131__3_A_EN_A_LECT_01",
+                        "fullname": "LE/CSSD 3131 A - Machine Learning"}]
+            past = [{"id": 7, "shortname": "2026_LE_CSSD_F_3101__3_A_EN_A_LECT_01",
+                     "fullname": "LE/CSSD 3101 A - Software Requirements &#38; Analysis"},
+                    {"id": 8, "shortname": "2024_LE_CSSD_F_1101__3_A_EN_A_LECT_01",
+                     "fullname": "LE/CSSD 1101 A - Old course"}]
+            return current if classification == "inprogress" else current + past
+
+    m = TermMoodle()
+    ids = lambda c: sorted(x["id"] for x in tracked_courses(m, c))  # noqa: E731
+    assert ids(cfg) == [42]
+    assert ids(dataclasses.replace(cfg, include_courses=("cssd 3101",))) == [7, 42]
+    assert ids(dataclasses.replace(cfg, include_courses=("cssd3101",))) == [7, 42]
+    assert ids(dataclasses.replace(cfg, include_courses=("8",))) == [8, 42]
+    assert ids(dataclasses.replace(cfg, include_courses=("requirements & analysis",))) == [7, 42]
+    assert ids(dataclasses.replace(cfg, include_courses=("cssd 3101",),
+                                   exclude_courses=("machine learning",))) == [7]

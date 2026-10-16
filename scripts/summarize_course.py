@@ -12,6 +12,7 @@ Uses Gemini's free tier (GEMINI_API_KEY in .env).
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime
 from html import escape
@@ -64,6 +65,7 @@ def main() -> int:
     ap.add_argument("course", help='part of the course name, e.g. "CSSD 3131" or "Machine Learning"')
     ap.add_argument("--match", help="only modules/files whose name contains this (case-insensitive)")
     ap.add_argument("--list", action="store_true", help="list the matching files, then stop")
+    ap.add_argument("--max", type=int, help="only the first N files (e.g. --max 3 to test)")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -74,7 +76,7 @@ def main() -> int:
 
     q = args.course.lower()
     matches = []
-    for c in moodle.courses(cfg.course_classification):
+    for c in moodle.courses("allincludinghidden"):  # any course you're in, whatever its status
         names = f"{c['shortname']} {_clean(c['fullname'])} {course_label(c['shortname'], _clean(c['fullname']))}"
         if q in names.lower() and "_LAB_" not in c["shortname"]:
             matches.append(c)
@@ -98,6 +100,8 @@ def main() -> int:
     if not items:
         print("No matching lecture files.")
         return 1
+    if args.max:
+        items = items[:args.max]
 
     print(f"{full_title}: {len(items)} files")
     for mod, f in items:
@@ -105,21 +109,38 @@ def main() -> int:
     if args.list:
         return 0
 
+    # Finished lectures are cached, so a re-run (or a bigger --max) doesn't redo them.
+    cache_file = cfg.output_dir / "notes-cache" / f"{c['id']}.json"
+    cache = json.loads(cache_file.read_text(encoding="utf-8")) if cache_file.exists() else {}
     notes, used_in, used_out, models_used = [], 0, 0, set()
-    for i, (mod, f) in enumerate(items, 1):
-        print(f"Summarizing {i}/{len(items)}: {mod.name[:70]}", flush=True)
-        data = moodle.download(f.download_url, MAX_FILE_BYTES)
-        parts = _parts(data, f.name, LECTURE_PROMPT.format(course=full_title, title=mod.name))
-        try:
-            r = ai.generate(cfg, parts)
-            text = r.text or "*No summary came back for this file.*"
+    try:
+        for i, (mod, f) in enumerate(items, 1):
+            key = f"{f.url}@{f.timemodified}"
+            if key in cache:
+                print(f"Cached {i}/{len(items)}: {mod.name[:70]}")
+                notes.append((mod, f, cache[key]["text"]))
+                models_used.add(cache[key]["model"])
+                continue
+            print(f"Summarizing {i}/{len(items)}: {mod.name[:70]}", flush=True)
+            data = moodle.download(f.download_url, MAX_FILE_BYTES)
+            parts = _parts(data, f.name, LECTURE_PROMPT.format(course=full_title, title=mod.name))
+            try:
+                r = ai.generate(cfg, parts)
+            except ai.AIError as e:
+                print(f"  skipped: {e}")
+                notes.append((mod, f, f"*Couldn't summarize this file: {e}*"))
+                continue
             used_in += r.input_tokens
             used_out += r.output_tokens
             models_used.add(r.model)
-        except ai.AIError as e:
-            print(f"  skipped: {e}")
-            text = f"*Couldn't summarize this file: {e}*"
-        notes.append((mod, f, text))
+            notes.append((mod, f, r.text or "*No summary came back for this file.*"))
+            cache[key] = {"text": notes[-1][2], "model": r.model}
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(cache), encoding="utf-8")
+    except KeyboardInterrupt:  # Ctrl+C: send what's finished
+        print(f"\nStopped; sending the {len(notes)} finished.")
+    if not notes:
+        return 1
 
     joined = "\n\n".join(f"## {m.name}\n{t}" for m, _, t in notes)
     r = ai.generate(cfg, [{"type": "text", "text": OVERVIEW_PROMPT.format(course=full_title, notes=joined)}])

@@ -176,9 +176,26 @@ def ordered_sections(sections: list[dict]):
             yield from walk(sec, "")
 
 
-def _excluded(course: dict, patterns: tuple[str, ...]) -> bool:
-    names = f"{course.get('shortname', '')} {course.get('fullname', '')}".lower()
-    return any(p in names for p in patterns)
+def _matches(course: dict, patterns: tuple[str, ...]) -> bool:
+    """True if any pattern is the course's id or appears in its name ("CSSD 3101", "cssd3101")."""
+    fullname = _clean(course.get("fullname"))
+    names = f"{course.get('shortname', '')} {fullname} {course_label(course.get('shortname', ''), fullname)}"
+    names = names.lower()
+    squashed = names.replace(" ", "").replace("_", "")
+    return any(p == str(course.get("id")) or p in names or p.replace(" ", "") in squashed
+               for p in patterns)
+
+
+def tracked_courses(moodle: Moodle, cfg: Config) -> list[dict]:
+    """Courses eClass lists under COURSE_CLASSIFICATION, plus any in INCLUDE_COURSES whatever their
+    status (profs sometimes set dates that make a current course show up as "past" or "future")."""
+    courses = {c["id"]: c for c in moodle.courses(cfg.course_classification)}
+    if cfg.include_courses:
+        for c in moodle.courses("allincludinghidden"):
+            if c["id"] not in courses and _matches(c, cfg.include_courses):
+                courses[c["id"]] = c
+                log.info("Including %s (listed in INCLUDE_COURSES)", c.get("shortname"))
+    return [c for c in courses.values() if not _matches(c, cfg.exclude_courses)]
 
 
 def _module(moodle: Moodle, m: dict, section: str) -> Module:
@@ -214,8 +231,7 @@ def collect(moodle: Moodle, seen: dict, cfg: Config) -> tuple[Digest, dict]:
     new_seen = {"courses": {}, "modules": {}, "discussions": dict(seen["discussions"])}
     errors: list[str] = []
 
-    raw_courses = [c for c in moodle.courses(cfg.course_classification)
-                   if not _excluded(c, cfg.exclude_courses)]
+    raw_courses = tracked_courses(moodle, cfg)
     log.info("Found %d courses", len(raw_courses))
 
     courses: dict[int, Course] = {}

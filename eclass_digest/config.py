@@ -32,6 +32,7 @@ class Config:
     eclass_token: str
     course_classification: str
     exclude_courses: tuple[str, ...]
+    include_courses: tuple[str, ...]
 
     digest_to: str
     email_method: str
@@ -77,15 +78,17 @@ def load_config() -> Config:
     ai_enabled = bool(gemini_key) if ai_setting == "auto" else ai_setting in ("1", "true", "yes", "on")
     fallbacks = os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash,gemini-2.5-flash")
 
-    exclude = tuple(
-        s.strip().lower() for s in os.getenv("EXCLUDE_COURSES", "").split(",") if s.strip()
-    )
+    def _list(name: str) -> tuple[str, ...]:
+        return tuple(s.strip().lower() for s in os.getenv(name, "").split(",") if s.strip())
+
+    exclude = _list("EXCLUDE_COURSES")
 
     return Config(
         eclass_url=os.getenv("ECLASS_URL", "https://eclass.yorku.ca").rstrip("/"),
         eclass_token=os.getenv("ECLASS_TOKEN", "").strip(),
         course_classification=os.getenv("COURSE_CLASSIFICATION", "inprogress").strip(),
         exclude_courses=exclude,
+        include_courses=_list("INCLUDE_COURSES"),
         digest_to=os.getenv("DIGEST_TO", "").strip(),
         email_method=os.getenv("EMAIL_METHOD", "smtp").strip().lower(),
         smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
