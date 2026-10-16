@@ -17,8 +17,8 @@ A free tool for York University students. Every morning it reads your **eClass**
 It uses eClass's official mobile-app API (the same one the Moodle app uses), so it doesn't break when the
 website changes. You log in with Passport York + Duo **once**, during setup.
 
-**Cost: free.** Gmail, Google Calendar and GitHub are all free for this. The optional AI summary is the only
-paid part (a few cents a day with your own Anthropic API key).
+**Cost: free.** Gmail, Google Calendar, GitHub and the optional AI summary (Google Gemini's free tier) are all
+free for this.
 
 ## Setup (about 15 minutes)
 
@@ -53,7 +53,7 @@ python3 -m venv .venv
 | Recipient | The address the digest goes to (usually your `@my.yorku.ca`). |
 | Gmail | Make a Gmail [app password](https://myaccount.google.com/apppasswords) so the digest can be sent. |
 | Calendar | Make a free Google Cloud "service account" (a robot account) and share one calendar with it. |
-| AI summary | Optional. Paste an [Anthropic API key](https://console.anthropic.com/) or press Enter to skip. |
+| AI summary | Optional. Paste a free [Gemini key](https://aistudio.google.com/apikey), or press Enter to skip. |
 | Schedule | Sends your first digest and sets it to run every morning. |
 
 That's it. On Windows it runs from Task Scheduler. If your PC is asleep at the scheduled time, it runs when the PC wakes.
@@ -92,6 +92,11 @@ Everything is in `.env`, which the wizard writes for you. See [.env.example](.en
 Command line: `python -m eclass_digest [--dry-run] [--no-email] [--no-calendar] [--no-ai] [--reset]`.
 `--dry-run` saves a preview to `output/` without sending anything.
 
+**Lecture notes for a whole course** (one-off): reads every lecture PDF, including diagrams and equations, and emails study notes:
+```
+python scripts/summarize_course.py "CSSD 3131" --match lecture
+```
+
 ## Troubleshooting
 
 - **No email?** Check spam. Also check that `DIGEST_TO` is your exact address; York addresses often include a number (e.g. `jsmith7@`).
@@ -112,7 +117,8 @@ Command line: `python -m eclass_digest [--dry-run] [--no-email] [--no-calendar] 
 ## Privacy & security
 
 - Everything runs on **your** computer or **your** private GitHub repo. Nothing is sent anywhere else, except the
-  optional AI summary, which sends that day's new course material to the Anthropic API.
+  optional AI summary, which sends course material to the AI you chose. On Gemini's **free tier, Google may use
+  that content to improve its products**. Leave the key out, or use a paid Gemini key, if that matters to you.
 - Email links are normal eClass links with no token in them, so forwarding a digest doesn't give anyone access.
 - `.env`, `service_account.json` and `token.json` hold your secrets. They're git-ignored; never commit or share them.
   Anyone with your eClass token can read your eClass.
@@ -129,7 +135,8 @@ python -m pytest tests            # offline; uses a fake eClass
 | [moodle.py](eclass_digest/moodle.py) | Moodle web-service client |
 | [collect.py](eclass_digest/collect.py) | Courses, sections, files, announcements, events; diffing against last run |
 | [files.py](eclass_digest/files.py) | Downloads and text extraction (PDF, PPTX, DOCX) |
-| [summarize.py](eclass_digest/summarize.py) | Claude summary |
+| [ai.py](eclass_digest/ai.py) | Gemini API calls, with fallback models and rate-limit waits |
+| [summarize.py](eclass_digest/summarize.py) | Daily summary prompt |
 | [gcal.py](eclass_digest/gcal.py) | Google Calendar sync |
 | [emailer.py](eclass_digest/emailer.py) | Email rendering and sending |
 

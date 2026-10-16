@@ -14,8 +14,8 @@ from .moodle import Moodle
 log = logging.getLogger(__name__)
 
 SUMMARIZABLE = {".pdf", ".pptx", ".docx", ".txt", ".md"}
-MAX_SUMMARY_FILES = 15  # per run, so a huge course dump doesn't blow up the bill
-EXCERPT_CHARS = 20_000  # per file; the prompt tells Claude these are excerpts
+MAX_SUMMARY_FILES = 15  # per run, to stay well inside the free tier's limits
+EXCERPT_CHARS = 20_000  # per file; the prompt says these are excerpts
 MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
 
 

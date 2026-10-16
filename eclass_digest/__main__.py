@@ -52,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
                         "touch the calendar or update state")
     p.add_argument("--no-email", action="store_true")
     p.add_argument("--no-calendar", action="store_true")
-    p.add_argument("--no-ai", action="store_true", help="skip the Claude summary")
+    p.add_argument("--no-ai", action="store_true", help="skip the AI summary")
     p.add_argument("--reset", action="store_true",
                    help="forget what's been seen (next digest is a fresh baseline)")
     args = p.parse_args(argv)

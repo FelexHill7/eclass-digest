@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 from eclass_digest.envfile import read_env  # noqa: E402
 
 SECRETS = ["ECLASS_TOKEN", "DIGEST_TO", "SMTP_USER", "SMTP_PASSWORD", "GCAL_CALENDAR_ID",
-           "ANTHROPIC_API_KEY"]
+           "GEMINI_API_KEY"]
 
 
 def gh(*args: str, input: str | None = None) -> subprocess.CompletedProcess:

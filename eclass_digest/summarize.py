@@ -1,12 +1,11 @@
-"""Turn the day's eClass changes into a short readable briefing with Claude."""
+"""Turn the day's eClass changes into a short readable briefing with Gemini."""
 
 from __future__ import annotations
 
 import logging
 from html import escape
 
-import anthropic
-
+from . import ai
 from .collect import Digest
 from .config import Config
 
@@ -20,11 +19,6 @@ Write it in Markdown:
 3. One "### <course>" section per course that had activity: what was announced or posted, and for new slides, notes or readings, two or three bullets on what they cover.
 
 Skip courses with no activity. Link items with the URLs you're given. Only state what's in the material: file contents are excerpts and may be cut off, so summarize what's there and don't guess at the rest. It should take about two minutes to read. Use only headings, bullets, bold and links; no tables."""
-
-# Models that accept output_config.effort and server-side fallbacks.
-_EFFORT_MODELS = ("claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-haiku-5")
-_FALLBACK_MODELS = ("claude-opus-5", "claude-sonnet-5-5", "claude-fable-5")
-
 
 def _when(dt) -> str:
     return dt.strftime("%a %b %d, %I:%M %p").replace(" 0", " ")
@@ -67,30 +61,7 @@ def summarize(digest: Digest, cfg: Config) -> str:
     """Returns Markdown, or "" if there was nothing worth summarizing."""
     if not digest.has_news and not digest.upcoming(cfg.deadline_window_days):
         return ""
-
-    client = anthropic.Anthropic()
-    request = dict(
-        model=cfg.claude_model,
-        max_tokens=16000,
-        system=SYSTEM,
-        messages=[{"role": "user", "content": build_prompt(digest, cfg)}],
-    )
-    if cfg.claude_model.startswith(_EFFORT_MODELS):
-        request["output_config"] = {"effort": "medium"}
-
-    if cfg.claude_model.startswith(_FALLBACK_MODELS):
-        # If a safety classifier declines, the API retries on Anthropic's recommended model.
-        response = client.beta.messages.create(
-            **request, betas=["server-side-fallback-2026-07-01"], fallbacks="default"
-        )
-    else:
-        response = client.messages.create(**request)
-
-    if response.stop_reason == "refusal":
-        raise RuntimeError("Claude declined to summarize today's content")
-    text = "".join(b.text for b in response.content if b.type == "text").strip()
-    if response.stop_reason == "max_tokens":
-        text += "\n\n*(summary was cut off)*"
-    log.info("Summary: %d input / %d output tokens",
-             response.usage.input_tokens, response.usage.output_tokens)
-    return text
+    result = ai.generate(cfg, [{"type": "text", "text": build_prompt(digest, cfg)}], system=SYSTEM)
+    log.info("Summary (%s): %d input / %d output tokens",
+             result.model, result.input_tokens, result.output_tokens)
+    return result.text

@@ -205,26 +205,26 @@ def _calendar_ok(svc, cal_id: str, quiet: bool = False) -> bool:
 # --- 5. AI summary ------------------------------------------------------------
 
 def step_ai(env: dict) -> None:
-    heading(5, "AI summary (optional, the only part that costs money)")
-    print("With an Anthropic API key, each digest starts with a short written summary and\n"
-          "to-do list (about a few cents a day). Without one, everything else still works.")
-    if env.get("ANTHROPIC_API_KEY"):
-        print("A key is already set. Skipping.")
+    heading(5, "AI summary (optional, free)")
+    print("""With a free Gemini key, each digest starts with a short written summary and to-do list.
+Get one at https://aistudio.google.com/apikey (no card needed). On the free tier, Google may
+use what's sent (your course text) to improve its products. Without a key, everything else works.""")
+    if env.get("GEMINI_API_KEY"):
+        print("A Gemini key is already set. Skipping.")
         return
-    key = getpass.getpass("Anthropic API key (press Enter to skip): ").strip()
+    key = getpass.getpass("Gemini API key (press Enter to skip): ").strip()
     if not key:
-        print("Skipped. You can add ANTHROPIC_API_KEY to .env any time.")
+        print("Skipped. You can add GEMINI_API_KEY to .env any time.")
         return
-    import anthropic
+    import requests
 
-    try:
-        anthropic.Anthropic(api_key=key).models.list(limit=1)
-    except anthropic.AuthenticationError:
-        print("That key was rejected; skipping the summary for now.")
+    r = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
+                     headers={"x-goog-api-key": key}, timeout=30)
+    if r.status_code != 200:
+        print(f"Google rejected that key ({r.status_code}); skipping the summary for now.")
         return
-    set_env("ANTHROPIC_API_KEY", key)
-    set_env("AI_SUMMARY", "auto")
-    print("Key works.")
+    set_env("GEMINI_API_KEY", key)
+    print("Gemini key works.")
 
 
 # --- 6. First run + schedule --------------------------------------------------

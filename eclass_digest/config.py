@@ -45,7 +45,9 @@ class Config:
     include_full_index: bool
 
     ai_enabled: bool
-    claude_model: str
+    gemini_api_key: str
+    gemini_model: str
+    gemini_fallback_models: tuple[str, ...]
 
     google_client_secrets: Path
     google_token_file: Path
@@ -70,9 +72,10 @@ def load_config() -> Config:
     # Real environment variables win over .env (that's how GitHub Actions secrets get in).
     load_dotenv(ROOT / ".env")
 
+    gemini_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
     ai_setting = os.getenv("AI_SUMMARY", "auto").strip().lower()
-    has_key = bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"))
-    ai_enabled = has_key if ai_setting == "auto" else ai_setting in ("1", "true", "yes", "on")
+    ai_enabled = bool(gemini_key) if ai_setting == "auto" else ai_setting in ("1", "true", "yes", "on")
+    fallbacks = os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash,gemini-2.5-flash")
 
     exclude = tuple(
         s.strip().lower() for s in os.getenv("EXCLUDE_COURSES", "").split(",") if s.strip()
@@ -95,7 +98,9 @@ def load_config() -> Config:
         notify_calendar_changes=_bool("NOTIFY_CALENDAR_CHANGES", True),
         include_full_index=_bool("INCLUDE_FULL_INDEX", True),
         ai_enabled=ai_enabled,
-        claude_model=os.getenv("CLAUDE_MODEL", "claude-opus-5-5").strip(),
+        gemini_api_key=gemini_key,
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip(),
+        gemini_fallback_models=tuple(m.strip() for m in fallbacks.split(",") if m.strip()),
         google_client_secrets=_path("GOOGLE_CLIENT_SECRETS", "credentials.json"),
         google_token_file=_path("GOOGLE_TOKEN_FILE", "token.json"),
         google_token_json=os.getenv("GOOGLE_TOKEN_JSON", "").strip(),
