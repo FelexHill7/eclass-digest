@@ -93,6 +93,9 @@ Everything is in `.env`, which the wizard writes for you. See [.env.example](.en
 Command line: `python -m eclass_digest [--dry-run] [--no-email] [--no-calendar] [--no-ai] [--reset]`.
 `--dry-run` saves a preview to `output/` without sending anything.
 
+**Which courses are tracked?** `python scripts/list_courses.py` lists the courses in your digest, any eClass
+won't let you open, and this year's courses that aren't tracked (with how to add them).
+
 **Lecture notes for a whole course** (one-off): reads every lecture PDF, including diagrams and equations, and emails study notes:
 ```
 python scripts/summarize_course.py "CSSD 3131" --match lecture

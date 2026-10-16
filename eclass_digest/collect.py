@@ -186,6 +186,10 @@ def _matches(course: dict, patterns: tuple[str, ...]) -> bool:
                for p in patterns)
 
 
+INCLUDE_COURSES_HELP = ("To track a course, add it to INCLUDE_COURSES in .env by code, name or id, "
+                        "e.g. INCLUDE_COURSES=CSSD 3104, 165414")
+
+
 def tracked_courses(moodle: Moodle, cfg: Config) -> list[dict]:
     """Courses eClass lists under COURSE_CLASSIFICATION, plus any in INCLUDE_COURSES whatever their
     status (profs sometimes set dates that make a current course show up as "past" or "future")."""
