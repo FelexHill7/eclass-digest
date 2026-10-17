@@ -115,6 +115,38 @@ won't let you open, and this year's courses that aren't tracked (with how to add
 python scripts/summarize_course.py "CSSD 3131" --match lecture
 ```
 
+## Obsidian notes
+
+Turn every lecture into an [Obsidian](https://obsidian.md) note with real math. Each note has:
+- a summary
+- sections that follow the slides
+- `$inline$` and `$$display$$` LaTeX, rendered by Obsidian's built-in MathJax with no plugin needed
+- definition and example callouts
+- key takeaways
+- practice questions with collapsible answers
+- the original PDF embedded at the bottom
+
+1. In `.env`, set `OBSIDIAN_VAULT` to your vault's folder (and `GEMINI_API_KEY` if you haven't).
+2. Do the existing lectures once. Check the list first, then write the notes:
+   ```
+   python scripts/obsidian_export.py --list
+   python scripts/obsidian_export.py
+   ```
+3. From then on, the evening digest writes notes for newly posted lectures automatically, newest first, up to
+   `OBSIDIAN_MAX_PER_RUN` a night.
+
+Notes go in `<vault>/eClass/<course>/`, along with a course index note that links every lecture in order.
+If you edit a note in Obsidian, it's never overwritten. When the prof re-uploads those slides, the new
+version is saved next to yours as `<lecture> (updated <date>).md`.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `OBSIDIAN_VAULT` | *(off)* | Your vault's folder |
+| `OBSIDIAN_FOLDER` | `eClass` | Folder inside the vault |
+| `OBSIDIAN_MATCH` | `lecture\|slide\|notes\|week\|…` | Which files count as lecture material |
+| `OBSIDIAN_ATTACH_SLIDES` | `true` | Copy each PDF into the vault and embed it |
+| `OBSIDIAN_MAX_PER_RUN` | `5` | Notes written per evening |
+
 ## Troubleshooting
 
 - **No email?** Check spam. Also check that `DIGEST_TO` is your exact address; York addresses often include a number (e.g. `jsmith7@`).
@@ -154,6 +186,7 @@ python -m pytest tests            # offline; uses a fake eClass
 | [collect.py](eclass_digest/collect.py) | Courses, sections, files, announcements, events; diffing against last run |
 | [files.py](eclass_digest/files.py) | Downloads and text extraction (PDF, PPTX, DOCX) |
 | [ai.py](eclass_digest/ai.py) | Gemini API calls, with fallback models and rate-limit waits |
+| [obsidian.py](eclass_digest/obsidian.py) | Obsidian notes with LaTeX math, course index, edit protection |
 | [summarize.py](eclass_digest/summarize.py) | Daily summary prompt |
 | [gcal.py](eclass_digest/gcal.py) | Google Calendar sync |
 | [emailer.py](eclass_digest/emailer.py) | Email rendering and sending |

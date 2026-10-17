@@ -409,3 +409,51 @@ def test_pages_are_tracked_without_flagging_old_ones(cfg):
     page["contents"][0]["timemodified"] = NOW  # the prof edits the notes
     digest, _ = collect(moodle, seen, cfg)
     assert {m.name: m.status for _, m in digest.changed_modules()} == {"Week 1 notes": "updated"}
+
+
+def test_obsidian_notes_with_math_index_and_edit_protection(cfg, monkeypatch, tmp_path):
+    from eclass_digest import ai, obsidian
+
+    cfg = dataclasses.replace(cfg, obsidian_vault=tmp_path / "vault", obsidian_folder="eClass",
+                              obsidian_match=r"lecture|slide", obsidian_attach_slides=True)
+    moodle = FakeMoodle()
+    digest, _ = collect(moodle, empty_seen(), cfg)
+    course = digest.courses[0]
+    lec = course.modules[1]
+    lec.name = "Lecture 1: Introduction and motivation, Thursday Sep.10, 2026"
+
+    body = ("# Lecture 1\n> [!summary]\n> Intro.\n\n## Loss\n"
+            + r"The loss is \(L = \frac{1}{n}\sum_i e_i^2\)." + "\n" + r"\[\nabla L = 0\]" + "\n")
+    monkeypatch.setattr(Moodle, "download", lambda self, url, max_bytes: b"%PDF-1.4 fake")
+    monkeypatch.setattr(ai, "generate", lambda cfg, parts, system="": ai.Result(body, 1, 1, "fake"))
+
+    written = obsidian.sync(moodle, [course], cfg)
+    assert [p.name for p in written] == ["Lecture 1 - Introduction and motivation.md"]
+    note = written[0].read_text(encoding="utf-8")
+    assert note.startswith("---\ncourse: \"EECS2030\"")
+    assert r"$L = \frac{1}{n}\sum_i e_i^2$" in note and "\n$$\n" + r"\nabla L = 0" + "\n$$\n" in note
+    assert r"\(" not in note and "# Lecture 1" not in note
+    assert "![[lec1.pdf]]" in note and (written[0].parent / "slides" / "lec1.pdf").exists()
+    index = (written[0].parent / "EECS2030.md").read_text(encoding="utf-8")
+    assert "[[Lecture 1 - Introduction and motivation]]" in index
+
+    assert obsidian.sync(moodle, [course], cfg) == []  # already current
+
+    # You edit the note in Obsidian, then the prof re-uploads the slides
+    written[0].write_text(note + "\nMy own notes\n", encoding="utf-8")
+    lec.files[0].timemodified += 100
+    again = obsidian.sync(moodle, [course], cfg)
+    assert again[0].name.startswith("Lecture 1 - Introduction and motivation (updated ")
+    assert "My own notes" in written[0].read_text(encoding="utf-8")
+
+
+def test_obsidian_note_titles():
+    from eclass_digest.collect import FileItem, Module
+    from eclass_digest.obsidian import note_title
+
+    f = FileItem("a.pdf", "u", "d", "", 1, 1)
+    assert note_title(Module(1, "Slides", "resource", "u", "Logic Programming › Week 5"), f, 1) == "Week 5 - Slides"
+    assert note_title(Module(1, "Lecture 4 Linear algebra Probability", "resource", "u", "M1"), f, 1) \
+        == "Lecture 4 Linear algebra Probability"
+    assert note_title(Module(1, "Lecture 2 Intro to ML, Tuesday Sep. 15, 2026", "resource", "u", "M0"), f, 1) \
+        == "Lecture 2 Intro to ML"
