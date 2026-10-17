@@ -1,20 +1,27 @@
-"""Run the daily digest: python -m eclass_digest [--dry-run] [--no-email] [--no-calendar] [--no-ai]"""
+"""Run the eClass digest.
+
+    python -m eclass_digest                  # full digest (scheduled for the evening)
+    python -m eclass_digest --mode check     # every couple of hours: email only if something's new
+    python -m eclass_digest --mode morning   # "due today" email
+    python -m eclass_digest --dry-run        # build it and save a preview to output/, send nothing
+"""
 
 from __future__ import annotations
 
 import argparse
+import copy
 import logging
 import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
 from . import emailer
-from .collect import collect
+from .collect import Digest, collect
 from .config import Config, load_config
 from .files import process_files
 from .google_auth import load_credentials
 from .moodle import Moodle, MoodleError
-from .state import State, empty_seen
+from .state import State, empty_seen, run_lock
 
 log = logging.getLogger("eclass_digest")
 
@@ -35,40 +42,77 @@ def _setup_logging(cfg: Config) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-def _alert(cfg: Config, subject: str, body: str) -> None:
-    """Best-effort email when the run can't proceed (e.g. the eClass token expired)."""
+def _send(cfg: Config, subject: str, html: str, text: str, creds) -> bool:
+    try:
+        emailer.send(cfg, emailer.build_message(cfg, subject, html, text), creds)
+        log.info("Emailed %s: %s", cfg.digest_to, subject)
+        return True
+    except Exception:
+        log.exception("Sending the email failed")
+        return False
+
+
+def _token_expired(cfg: Config, state: State, mode: str) -> None:
+    """Tell the user once a day, not every two hours."""
+    today = datetime.now().date().isoformat()
+    if state.data.get("token_alert_sent") == today:
+        return
+    body = ("Your eClass access token stopped working, so the digest can't check eClass. "
+            "On your computer run: python scripts/get_eclass_token.py")
     try:
         creds = load_credentials(cfg) if cfg.email_method == "gmail_api" else None
-        msg = emailer.build_message(cfg, subject, f"<p>{body}</p>", body)
-        emailer.send(cfg, msg, creds)
     except Exception:
-        log.exception("Couldn't send the alert email either")
+        creds = None
+    if _send(cfg, "eClass digest: please refresh your eClass token", f"<p>{body}</p>", body, creds):
+        state.data["token_alert_sent"] = today
+        state.save()
+
+
+def _save_preview(cfg: Config, name: str, subject: str, html: str) -> None:
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    out = cfg.output_dir / name
+    out.write_text(f"<!doctype html><meta charset='utf-8'><title>{subject}</title>{html}", encoding="utf-8")
+    log.info("Saved %s", out)
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="eclass_digest", description=__doc__)
+    p = argparse.ArgumentParser(prog="eclass_digest", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--mode", choices=["digest", "check", "morning"], default="digest")
     p.add_argument("--dry-run", action="store_true",
-                   help="build the digest and save it to output/, but don't email, "
-                        "touch the calendar or update state")
+                   help="build it and save a preview to output/, but don't email, touch the "
+                        "calendar or update state")
     p.add_argument("--no-email", action="store_true")
     p.add_argument("--no-calendar", action="store_true")
     p.add_argument("--no-ai", action="store_true", help="skip the AI summary")
     p.add_argument("--reset", action="store_true",
-                   help="forget what's been seen (next digest is a fresh baseline)")
+                   help="forget what's been seen (next run is a fresh baseline)")
     args = p.parse_args(argv)
+    if sys.stdout is not None:  # Windows consoles can't always print the emoji in subjects
+        sys.stdout.reconfigure(errors="replace")
 
     cfg = load_config()
     _setup_logging(cfg)
     if not cfg.eclass_token:
-        log.error("ECLASS_TOKEN is empty. Run: python scripts/setup.py")
+        log.error("ECLASS_TOKEN is empty. Run: python scripts/setup_wizard.py")
         return 2
     if not cfg.digest_to and not (args.no_email or args.dry_run):
         log.error("DIGEST_TO is empty. Set it in .env to the address the digest should go to")
         return 2
+    try:
+        with run_lock(cfg.state_file):
+            return _run(cfg, args)
+    except TimeoutError as e:
+        log.error("Skipping this run: %s", e)
+        return 4
 
+
+def _run(cfg: Config, args) -> int:
     state = State.load(cfg.state_file)
     if args.reset:
-        state.seen = empty_seen()
+        state.seen, state.alert_seen = empty_seen(), empty_seen()
+    mode = args.mode
 
     moodle = Moodle(cfg.eclass_url, cfg.eclass_token)
     try:
@@ -76,18 +120,18 @@ def main(argv: list[str] | None = None) -> int:
     except MoodleError as e:
         if e.is_auth_error:
             log.error("eClass rejected the token (%s)", e)
-            if not args.dry_run:
-                _alert(cfg, "eClass digest: please refresh your eClass token",
-                       "Your eClass access token stopped working, so today's digest wasn't "
-                       "built. On your computer run: python scripts/get_eclass_token.py")
+            if not args.dry_run and not args.no_email:
+                _token_expired(cfg, state, mode)
             return 3
         raise
-    log.info("Signed in to %s as %s", info.get("sitename"), info.get("fullname"))
+    log.info("[%s] Signed in to %s as %s", mode, info.get("sitename"), info.get("fullname"))
 
-    digest, new_seen = collect(moodle, state.seen, cfg)
+    # The digest and the 2-hourly checks each diff against their own "already seen" baseline.
+    baseline = state.alert_seen if mode == "check" else state.seen
+    digest, new_seen = collect(moodle, copy.deepcopy(baseline), cfg)
 
-    use_ai = cfg.ai_enabled and not args.no_ai
-    if use_ai or cfg.download_files:
+    use_ai = mode == "digest" and cfg.ai_enabled and not args.no_ai
+    if use_ai or (mode == "digest" and cfg.download_files):
         process_files(moodle, digest, cfg, want_text=use_ai)
     if use_ai:
         from .summarize import summarize
@@ -98,8 +142,8 @@ def main(argv: list[str] | None = None) -> int:
             log.exception("AI summary failed")
             digest.errors.append(f"AI summary unavailable today: {e}")
 
-    creds = None
-    needs_google = (not args.dry_run) and (
+    creds, changes = None, []
+    needs_google = not args.dry_run and (
         not args.no_calendar or (not args.no_email and cfg.email_method == "gmail_api"))
     if needs_google:
         try:
@@ -107,8 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:
             log.exception("Google sign-in failed")
             digest.errors.append(f"Google sign-in failed: {e}")
-
-    if creds and not args.no_calendar and not args.dry_run:
+    if creds and not args.no_calendar:
         from .gcal import sync_calendar
 
         try:
@@ -116,44 +159,77 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:
             log.exception("Calendar sync failed")
             digest.errors.append(f"Google Calendar sync failed: {e}")
-            changes = []
-        if changes and cfg.notify_calendar_changes and not args.no_email:
-            c_subject, c_html, c_text = emailer.render_calendar_email(changes, cfg)
-            try:
-                emailer.send(cfg, emailer.build_message(cfg, c_subject, c_html, c_text), creds)
-                log.info("Emailed calendar changes: %s", c_subject)
-            except Exception:
-                log.exception("Sending the calendar email failed")
+    state.save()  # calendar bookkeeping is kept whatever happens with the email
 
-    subject = emailer.subject_line(digest, cfg)
-    html = emailer.render_html(digest, cfg)
-    text = emailer.render_text(digest, cfg)
-    cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    out = cfg.output_dir / f"digest-{digest.generated:%Y-%m-%d}.html"
-    out.write_text(f"<!doctype html><meta charset='utf-8'><title>{subject}</title>{html}",
-                   encoding="utf-8")
-    log.info("Saved %s", out)
+    if mode == "check":
+        return _check(cfg, args, state, digest, new_seen, changes, creds)
+    if mode == "morning":
+        return _morning(cfg, args, state, digest, changes, creds)
+    return _digest(cfg, args, state, digest, new_seen, changes, creds)
 
+
+def _remember_warned(state: State, digest: Digest, urgent) -> None:
+    now = digest.generated.timestamp()
+    state.warned.update({str(e.id): int(e.start.timestamp()) for e in urgent})
+    for key, due in list(state.warned.items()):  # forget deadlines that have passed
+        if due < now:
+            del state.warned[key]
+
+
+def _digest(cfg, args, state, digest, new_seen, changes, creds) -> int:
+    subject, html, text = emailer.render_digest(digest, changes, cfg)
+    out = _save_preview(cfg, f"digest-{digest.generated:%Y-%m-%d}.html", subject, html)
     if args.dry_run:
         print(f"Dry run. Subject: {subject}\nPreview: {out}")
         return 0
-
-    sent = False
     should_send = digest.has_news or digest.errors or cfg.send_if_nothing_new or digest.first_run
-    if not args.no_email and should_send:
-        try:
-            emailer.send(cfg, emailer.build_message(cfg, subject, html, text), creds)
-            sent = True
-            log.info("Emailed %s: %s", cfg.digest_to, subject)
-        except Exception:
-            log.exception("Sending the email failed")
-
+    sent = should_send and not args.no_email and _send(cfg, subject, html, text, creds)
     # Only mark things as seen once you've actually been told about them.
     if sent or args.no_email or not should_send:
         state.seen = new_seen
+        _remember_warned(state, digest, digest.urgent(cfg.due_soon_hours))
         state.data["last_run"] = datetime.now().isoformat(timespec="seconds")
     state.save()
     return 0 if (sent or args.no_email or not should_send) else 1
+
+
+def _check(cfg, args, state, digest, new_seen, changes, creds) -> int:
+    # "Due soon, not submitted" is announced once per deadline; the evening digest repeats it.
+    urgent = [e for e in digest.urgent(cfg.due_soon_hours) if str(e.id) not in state.warned]
+    calendar_news = bool(changes) and cfg.notify_calendar_changes
+    if not (digest.has_news or urgent or calendar_news):
+        log.info("Check: nothing new")
+        state.alert_seen = new_seen
+        state.save()
+        return 0
+    subject, html, text = emailer.render_alert(digest, changes, urgent, cfg)
+    out = _save_preview(cfg, f"alert-{digest.generated:%Y-%m-%d-%H%M}.html", subject, html)
+    if args.dry_run:
+        print(f"Dry run. Subject: {subject}\nPreview: {out}")
+        return 0
+    sent = not args.no_email and _send(cfg, subject, html, text, creds)
+    if sent or args.no_email:
+        state.alert_seen = new_seen
+        _remember_warned(state, digest, urgent)
+    state.save()
+    return 0 if (sent or args.no_email) else 1
+
+
+def _morning(cfg, args, state, digest, changes, creds) -> int:
+    subject, html, text = emailer.render_morning(digest, changes, cfg)
+    out = _save_preview(cfg, f"morning-{digest.generated:%Y-%m-%d}.html", subject, html)
+    if args.dry_run:
+        print(f"Dry run. Subject: {subject}\nPreview: {out}")
+        return 0
+    has_something = digest.due_by_end_of(0) or (changes and cfg.notify_calendar_changes) or digest.errors
+    if not (has_something or cfg.morning_send_if_empty):
+        log.info("Morning: nothing due today, no email")
+        return 0
+    sent = not args.no_email and _send(cfg, subject, html, text, creds)
+    if sent:
+        _remember_warned(state, digest, digest.urgent(cfg.due_soon_hours))
+        state.save()
+    return 0 if (sent or args.no_email) else 1
 
 
 if __name__ == "__main__":

@@ -55,6 +55,27 @@ class FakeMoodle(Moodle):
              "created": NOW - 3600, "modified": NOW - 3600,
              "message": "<p>Hi all, see the <a href='https://x.org'>syllabus</a>.</p>"},
         ]
+        self.grades = [
+            {"id": 500, "itemname": "Lab 1", "itemtype": "mod", "itemmodule": "assign", "cmid": 201,
+             "gradeformatted": "97.00", "grademax": 100, "gradedategraded": NOW - 86400, "feedback": ""},
+            {"id": 501, "itemname": "Assignment 1", "itemtype": "mod", "itemmodule": "assign",
+             "cmid": 201, "gradeformatted": "-", "grademax": 100, "gradedategraded": None, "feedback": ""},
+            {"id": 599, "itemname": None, "itemtype": "course", "gradeformatted": "97.00"},
+        ]
+        self.submissions = {9: "not submitted"}
+
+    def site_info(self):
+        self.user_id = 1
+        return {"userid": 1, "sitename": "eClass", "fullname": "Test Student"}
+
+    def grade_items(self, course_id, user_id):
+        return self.grades
+
+    def assignment_submission(self, assign_id):
+        return self.submissions.get(assign_id, "")
+
+    def quiz_submission(self, quiz_id):
+        return "not submitted"
 
     def courses(self, classification="inprogress"):
         return [{"id": 42, "shortname": "EECS2030", "fullname": "Advanced OOP",
@@ -125,10 +146,9 @@ def test_first_run_is_baseline_then_diffs(cfg):
     assert changed == {"Lecture 1 slides": "updated", "Lecture 2 slides": "new"}
     assert [a.subject for _, a in digest2.fresh_announcements()] == ["Midterm room change"]
 
-    html = emailer.render_html(digest2, cfg)
+    subject, html, _ = emailer.render_digest(digest2, [], cfg)
     assert "Midterm room change" in html and "lec2.pptx" in html
     assert "token" not in html and "webservice" not in html
-    subject = emailer.subject_line(digest2, cfg)
     assert "1 announcement" in subject and "2 new/updated items" in subject
     assert "Assignment 1 is due" in build_prompt(digest2, cfg)
 
@@ -230,9 +250,9 @@ def test_calendar_changes_are_reported(cfg):
     moved = next(c for c in changes if c.kind == "moved")
     assert moved.previous_start < moved.start
 
-    subject, html, text = emailer.render_calendar_email(changes, cfg)
-    assert subject == "📅 Calendar updated · 1 new deadline, 1 rescheduled"
-    assert "Quiz 1 closes" in html and "View in Calendar" in html
+    subject, html, text = emailer.render_alert(digest, changes, [], cfg)
+    assert subject.startswith("🔔 eClass:") and "2 calendar changes" in subject
+    assert "Quiz 1 closes" in html and "View in Calendar" in html and "Rescheduled" in html
 
     # Quiz removed from eClass
     moodle.calendar_events = lambda *a: [
@@ -266,3 +286,78 @@ def test_include_courses_adds_courses_outside_in_progress(cfg):
     assert ids(dataclasses.replace(cfg, include_courses=("requirements & analysis",))) == [7, 42]
     assert ids(dataclasses.replace(cfg, include_courses=("cssd 3101",),
                                    exclude_courses=("machine learning",))) == [7]
+
+
+def test_new_grades_are_flagged_after_the_baseline(cfg):
+    moodle = FakeMoodle()
+    digest, seen = collect(moodle, empty_seen(), cfg)
+    assert [g.name for g in digest.courses[0].grades] == ["Lab 1"]  # ungraded + course total skipped
+    assert not digest.fresh_grades()  # first look at grades is a baseline
+
+    moodle.grades[1].update(gradeformatted="88.50", gradedategraded=NOW, feedback="<p>Nice work</p>")
+    moodle.grades[0]["feedback"] = "Late penalty applied"
+    digest2, seen2 = collect(moodle, seen, cfg)
+    fresh = {g.name: (g.status, g.display, g.feedback) for _, g in digest2.fresh_grades()}
+    assert fresh == {"Assignment 1": ("new", "88.50 / 100", "Nice work"),
+                     "Lab 1": ("updated", "97.00 / 100", "Late penalty applied")}
+    assert digest2.has_news
+
+    digest3, _ = collect(moodle, seen2, cfg)
+    assert not digest3.fresh_grades()
+
+
+def test_unsubmitted_deadline_within_24h_is_urgent(cfg):
+    moodle = FakeMoodle()
+    moodle.calendar_events = lambda *a: [
+        {"id": 9001, "name": "Assignment 1 is due", "courseid": 42, "modulename": "assign",
+         "instance": 9, "eventtype": "due", "timestart": NOW + 5 * 3600, "timeduration": 0},
+        {"id": 9003, "name": "Lab 2 is due", "courseid": 42, "modulename": "assign",
+         "instance": 10, "eventtype": "due", "timestart": NOW + 6 * 3600, "timeduration": 0},
+        {"id": 9004, "name": "Lab 3 is due", "courseid": 42, "modulename": "assign",
+         "instance": 11, "eventtype": "due", "timestart": NOW + 3 * 86400, "timeduration": 0}]
+    moodle.submissions = {9: "not submitted", 10: "submitted", 11: "draft"}
+    digest, _ = collect(moodle, empty_seen(), cfg)
+
+    assert [e.name for e in digest.urgent(24)] == ["Assignment 1 is due"]  # Lab 3 is 3 days out
+    subject, html, _ = emailer.render_digest(digest, [], cfg)
+    assert subject.split(" · ")[2].startswith("⚠ 1 not submitted")
+    assert "Due soon and not submitted" in html and "✓ submitted" in html
+    assert "draft, not submitted yet" in html  # not urgent yet, so not red
+
+    subject, html, _ = emailer.render_alert(digest, [], digest.urgent(24), cfg)
+    assert subject.startswith("🔔 eClass: ⚠ 1 due soon, not submitted")
+
+
+def test_morning_lists_whats_due_today(cfg):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(cfg.timezone)
+    now = datetime.now(tz)
+    end_of_today = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tz)
+    moodle = FakeMoodle()
+    due_today = int((now + (end_of_today - now) / 2).timestamp())
+    moodle.calendar_events = lambda *a: [
+        {"id": 9001, "name": "Assignment 1 is due", "courseid": 42, "modulename": "assign",
+         "instance": 9, "eventtype": "due", "timestart": due_today, "timeduration": 0},
+        {"id": 9005, "name": "Lab 9 is due", "courseid": 42, "modulename": "assign",
+         "instance": 12, "eventtype": "due", "timestart": int(end_of_today.timestamp()) + 3600,
+         "timeduration": 0}]
+    digest, _ = collect(moodle, empty_seen(), cfg)
+    subject, html, text = emailer.render_morning(digest, [], cfg)
+    assert subject == "☀ Due today: 1 item (1 not submitted)"
+    assert "Assignment 1 is due" in html and "Lab 9" not in html
+
+
+def test_check_mode_baseline_is_separate_from_digest(tmp_path):
+    from eclass_digest.state import State
+
+    import json
+
+    old = empty_seen()  # a state file from before alerts existed
+    old["courses"]["42"] = {"name": "X"}
+    (tmp_path / "state.json").write_text(json.dumps({"seen": old}))
+    s2 = State.load(tmp_path / "state.json")
+    assert s2.alert_seen == s2.seen  # alerts start from the digest's baseline
+    s2.alert_seen["courses"]["43"] = {"name": "Y"}
+    assert "43" not in s2.seen["courses"]

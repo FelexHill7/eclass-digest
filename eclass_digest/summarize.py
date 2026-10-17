@@ -14,9 +14,9 @@ log = logging.getLogger(__name__)
 SYSTEM = """You write a short daily briefing for a York University student, based on what changed in their eClass (Moodle) courses since yesterday.
 
 Write it in Markdown:
-1. A two-to-four sentence overview of what matters most today.
-2. "### Action items": a checklist (`- [ ]`) of concrete things to do, soonest first, with due dates written out (e.g. "Thu Oct 22, 11:59 PM").
-3. One "### <course>" section per course that had activity: what was announced or posted, and for new slides, notes or readings, two or three bullets on what they cover.
+1. A two-to-four sentence overview of what matters most right now, starting with anything due within a day that isn't submitted.
+2. "### Action items": a checklist (`- [ ]`) of concrete things to do, soonest first, with due dates written out (e.g. "Thu Oct 22, 11:59 PM"). Leave out deadlines already marked submitted.
+3. One "### <course>" section per course that had activity: new grades and the gist of any feedback, what was announced or posted, and for new slides, notes or readings, two or three bullets on what they cover.
 
 Skip courses with no activity. Link items with the URLs you're given. Only state what's in the material: file contents are excerpts and may be cut off, so summarize what's there and don't guess at the rest. It should take about two minutes to read. Use only headings, bullets, bold and links; no tables."""
 
@@ -30,15 +30,20 @@ def build_prompt(digest: Digest, cfg: Config) -> str:
     due = digest.upcoming(cfg.deadline_window_days)
     out.append(f'\n<deadlines next_days="{cfg.deadline_window_days}">')
     for e in due:
-        out.append(f"- {_when(e.start)} | {e.course_name or 'Personal'} | {e.name} | {e.url}")
+        status = f" | {e.submission}" if e.submission else ""
+        out.append(f"- {_when(e.start)} | {e.course_name or 'Personal'} | {e.name}{status} | {e.url}")
     out.append("</deadlines>")
 
     for course in digest.courses:
         anns = [a for a in course.announcements if a.status]
         mods = [m for m in course.modules if m.status]
-        if not (anns or mods):
+        grades = [g for g in course.grades if g.status]
+        if not (anns or mods or grades):
             continue
         out.append(f'\n<course name="{escape(course.shortname)}" title="{escape(course.fullname)}">')
+        for g in grades:
+            out.append(f'<grade item="{escape(g.name)}" grade="{escape(g.display)}" url="{g.url}">'
+                       f'{g.feedback}</grade>')
         for a in anns:
             out.append(
                 f'<announcement subject="{escape(a.subject)}" by="{escape(a.author)}" '
