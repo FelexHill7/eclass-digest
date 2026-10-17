@@ -1,12 +1,21 @@
 # eClass Daily Digest
 
-A free tool for York University students. Every morning it reads your **eClass** courses and:
+A free tool for York University students. It watches your **eClass** courses through the day and:
 
-- **emails you a digest** listing what's due in the next two weeks, new announcements in full, new slides, files and
-  activities, and a linked index of everything in every course.
-- **adds every deadline, quiz and exam to Google Calendar.** It also updates them when due dates change and removes them when they're deleted.
-- **emails you when your calendar changes** (new deadline, rescheduled, removed).
-- *(optional)* starts each digest with an **AI-written summary and to-do list**.
+- **at 7:30 AM, emails what's due today**, with whether you've submitted it. It's skipped if nothing's due.
+- **every 2 hours (9 AM–9 PM), checks for changes** and only emails when something happened:
+  - a new **grade or feedback**
+  - a new **announcement** (full text)
+  - new **slides or files**
+  - a **deadline added, moved or removed**
+  - a deadline **under 24 hours away that you haven't submitted**, flagged in red
+- **at 8 PM, after profs have posted for the day, sends the full digest:**
+  - what's due tonight and tomorrow
+  - everything new that day
+  - grades
+  - an AI-written summary and to-do list (optional)
+  - a linked index of every course
+- **keeps every deadline, quiz and exam in Google Calendar**, updating changed due dates and removing deleted ones.
 
 <p align="center">
   <img src="docs/sample-digest.png" width="560" alt="Example digest email">
@@ -56,7 +65,9 @@ python3 -m venv .venv
 | AI summary | Optional. Paste a free [Gemini key](https://aistudio.google.com/apikey), or press Enter to skip. |
 | Schedule | Sends your first digest and sets it to run every morning. |
 
-That's it. On Windows it runs from Task Scheduler. If your PC is asleep at the scheduled time, it runs when the PC wakes.
+That's it. On Windows it runs from Task Scheduler: the morning email, the 2-hourly checks and the evening digest.
+If your PC is asleep at a scheduled time, that run happens when the PC wakes. Change the times with
+`scripts\install_task.ps1 -Morning 07:00 -Evening 21:00 -CheckEvery 3`, or stop everything with `-Remove`.
 
 <details>
 <summary><b>Run it in the cloud with GitHub Actions</b> (works even when your computer is off)</summary>
@@ -69,7 +80,8 @@ That's it. On Windows it runs from Task Scheduler. If your PC is asleep at the s
    python scripts/push_github_secrets.py
    ```
    This copies your settings into the repo's encrypted secrets and switches the workflow on. It then runs
-   daily at 7 AM Toronto time. You can also start a run from the **Actions** tab.
+   on the same schedule (Toronto time) and uses roughly 300 of the 2,000 free Actions minutes a month.
+   You can also start a run from the **Actions** tab.
 
 The workflow does nothing until `DIGEST_ENABLED` is set, so copies of this repo never run by accident.
 </details>
@@ -84,13 +96,15 @@ Everything is in `.env`, which the wizard writes for you. See [.env.example](.en
 | `INCLUDE_COURSES` | | Also track these courses even if eClass doesn't mark them "in progress" (e.g. `CSSD 3101, 165459`) |
 | `EXCLUDE_COURSES` | | Skip courses whose code or name contains any of these (comma-separated) |
 | `DEADLINE_WINDOW_DAYS` | `14` | How far ahead "Coming up" looks |
-| `NOTIFY_CALENDAR_CHANGES` | `true` | Email when deadlines are added, moved or removed |
-| `SEND_IF_NOTHING_NEW` | `true` | Still email on quiet days |
+| `DUE_SOON_HOURS` | `24` | Flag unsubmitted deadlines in red, and alert once, when they're this close |
+| `NOTIFY_CALENDAR_CHANGES` | `true` | Include deadlines added, moved or removed in the emails |
+| `SEND_IF_NOTHING_NEW` | `true` | Still send the evening digest on quiet days |
+| `MORNING_SEND_IF_EMPTY` | `false` | Send the morning email even when nothing's due |
 | `INCLUDE_FULL_INDEX` | `true` | Add a linked index of every course to each digest |
 | `DOWNLOAD_FILES` | `false` | Keep a copy of every course file in `downloads/` |
 | `ECLASS_URL` | `https://eclass.yorku.ca` | Works with other Moodle sites too |
 
-Command line: `python -m eclass_digest [--dry-run] [--no-email] [--no-calendar] [--no-ai] [--reset]`.
+Command line: `python -m eclass_digest [--mode digest|check|morning] [--dry-run] [--no-email] [--no-calendar] [--no-ai] [--reset]`.
 `--dry-run` saves a preview to `output/` without sending anything.
 
 **Which courses are tracked?** `python scripts/list_courses.py` lists the courses in your digest, any eClass
