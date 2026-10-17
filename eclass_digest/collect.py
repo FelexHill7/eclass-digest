@@ -34,6 +34,7 @@ class FileItem:
     timemodified: int
     status: str = ""  # "new" | "updated" | ""
     text: str = ""  # extracted text, filled in only for files we summarize
+    summary: str = ""  # AI bullet points on what a new file covers (Markdown)
 
 
 @dataclass
@@ -252,7 +253,9 @@ def _module(moodle: Moodle, m: dict, section: str) -> Module:
     for c in m.get("contents") or []:
         if modname == "url" and c.get("type") == "url" and c.get("fileurl"):
             url = c["fileurl"]  # link straight to the external site
-        elif modname in ("resource", "folder") and c.get("type") == "file":
+        elif c.get("type") == "file" and (modname in ("resource", "folder") or
+                                          (modname == "page" and c.get("filename") == "index.html")):
+            # (a "page" is notes written straight into eClass; its text lives in index.html)
             path = (c.get("filepath") or "/").strip("/")
             name = f"{path}/{c['filename']}" if path else c["filename"]
             files.append(
@@ -329,10 +332,13 @@ def collect(moodle: Moodle, seen: dict, cfg: Config) -> tuple[Digest, dict]:
                         for f in module.files:
                             f.status = "new"
                     else:
+                        # Pages' contents weren't tracked before; the first look is a baseline.
+                        page_baseline = module.modname == "page" and not prev["files"]
                         for f in module.files:
                             before = prev["files"].get(f.name)
                             if before is None:
-                                f.status = "new"
+                                if not page_baseline:
+                                    f.status = "new"
                             elif f.timemodified > before:
                                 f.status = "updated"
                         if any(f.status for f in module.files):

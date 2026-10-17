@@ -53,13 +53,42 @@ def build_prompt(digest: Digest, cfg: Config) -> str:
             out.append(f'<{m.status}_item type="{m.modname}" name="{escape(m.name)}" '
                        f'section="{escape(m.section)}" url="{m.url}">')
             for f in m.files:
-                if f.status and f.text:
-                    out.append(f'<file name="{escape(f.name)}" url="{f.url}">\n{f.text}\n</file>')
+                if f.status and f.summary:
+                    out.append(f'<file name="{escape(f.name)}" url="{f.url}" kind="summary">\n'
+                               f'{f.summary}\n</file>')
+                elif f.status and f.text:
+                    out.append(f'<file name="{escape(f.name)}" url="{f.url}" kind="excerpt">\n'
+                               f'{f.text}\n</file>')
                 elif f.status:
                     out.append(f'<file name="{escape(f.name)}" url="{f.url}"/>')
             out.append(f"</{m.status}_item>")
         out.append("</course>")
     return "\n".join(out)
+
+
+FILE_PROMPT = """This was just posted in the course "{course}" ({section} > {module}): {name}.
+
+In 3 to 5 short Markdown bullets for a student's email, say what it covers: the topics, the key
+ideas, and any formulas or definitions worth knowing (write math in plain text, no LaTeX). Base it
+only on what's in the file, including diagrams and worked examples. Bullets only, no heading or preamble."""
+
+
+def summarize_file(cfg: Config, course, module, f, data: bytes) -> str:
+    """Bullet points on what one new file covers. PDFs go to the model whole (diagrams included)."""
+    from .files import MAX_AI_PDF_BYTES, extract_text
+
+    prompt = FILE_PROMPT.format(course=course.fullname or course.shortname, section=module.section,
+                                module=module.name, name=f.name)
+    if f.name.lower().endswith(".pdf") and len(data) <= MAX_AI_PDF_BYTES:
+        parts = [{"type": "pdf", "data": data, "name": f.name}, {"type": "text", "text": prompt}]
+    else:
+        text = extract_text(data, f.name).strip()
+        if not text:
+            return ""
+        parts = [{"type": "text", "text": f'<file name="{escape(f.name)}">\n{text[:100_000]}\n</file>\n\n{prompt}'}]
+    result = ai.generate(cfg, parts)
+    log.info("Summarized %s (%s)", f.name, result.model)
+    return result.text
 
 
 def summarize(digest: Digest, cfg: Config) -> str:

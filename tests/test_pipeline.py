@@ -361,3 +361,51 @@ def test_check_mode_baseline_is_separate_from_digest(tmp_path):
     assert s2.alert_seen == s2.seen  # alerts start from the digest's baseline
     s2.alert_seen["courses"]["43"] = {"name": "Y"}
     assert "43" not in s2.seen["courses"]
+
+
+def test_new_slides_get_their_own_summary_in_the_digest(cfg, monkeypatch, tmp_path):
+    from eclass_digest import files, summarize
+
+    cfg = dataclasses.replace(cfg, output_dir=tmp_path, ai_enabled=True)
+    moodle = FakeMoodle()
+    _, seen = collect(moodle, empty_seen(), cfg)
+    moodle.contents[1]["modules"].append(
+        {"id": 203, "name": "Week 2 slides", "modname": "resource", "instance": 5,
+         "url": f"{BASE}/mod/resource/view.php?id=203",
+         "contents": [{"type": "file", "filename": "week2.pdf", "filepath": "/",
+                       "fileurl": pluginfile("1/mod_resource/content/1/week2.pdf"),
+                       "filesize": 1000, "timemodified": NOW}]})
+    digest, _ = collect(moodle, seen, cfg)
+
+    calls = []
+    monkeypatch.setattr(Moodle, "download", lambda self, url, max_bytes: b"%PDF-1.4 fake")
+    monkeypatch.setattr(summarize, "summarize_file",
+                        lambda cfg, c, m, f, data: calls.append(f.name) or "- Inheritance and `super()`")
+    files.process_files(moodle, digest, cfg, want_text=True)
+    assert calls == ["week2.pdf"]
+    _, html, _ = emailer.render_digest(digest, [], cfg)
+    assert "Inheritance and <code>super()</code>" in html
+    assert 'kind="summary"' in build_prompt(digest, cfg)
+
+    # A second run (e.g. a resend) reuses the cached summary
+    digest, _ = collect(moodle, seen, cfg)
+    files.process_files(moodle, digest, cfg, want_text=True)
+    assert calls == ["week2.pdf"]
+
+
+def test_pages_are_tracked_without_flagging_old_ones(cfg):
+    moodle = FakeMoodle()
+    page = {"id": 204, "name": "Week 1 notes", "modname": "page", "instance": 6,
+            "url": f"{BASE}/mod/page/view.php?id=204",
+            "contents": [{"type": "file", "filename": "index.html", "filepath": "/",
+                          "fileurl": pluginfile("1/mod_page/content/3/index.html"),
+                          "filesize": 500, "timemodified": NOW - 86400}]}
+    moodle.contents[1]["modules"].append(page)
+    _, seen = collect(moodle, empty_seen(), cfg)
+    seen["modules"]["204"]["files"] = {}  # what older versions recorded for pages
+    digest, seen = collect(moodle, seen, cfg)
+    assert not digest.changed_modules()  # first look at the page's text is a baseline
+
+    page["contents"][0]["timemodified"] = NOW  # the prof edits the notes
+    digest, _ = collect(moodle, seen, cfg)
+    assert {m.name: m.status for _, m in digest.changed_modules()} == {"Week 1 notes": "updated"}

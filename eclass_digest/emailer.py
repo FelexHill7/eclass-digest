@@ -221,16 +221,29 @@ def _module_line(m, only_changed: bool = False) -> str:
     if only_changed:  # out of context, "Slides" alone doesn't say which week
         line += f' <span style="color:{MUTED};font-size:12px">· {escape(m.section)}</span>'
     files = [f for f in m.files if f.status] if only_changed else m.files
+    summaries = only_changed  # what each new file covers, under it
     # A single-file resource is already linked by its module; only list files when it adds info.
     if m.modname == "folder" or len(files) > 1:
         items = [f'<li>{FILE_ICONS.get(Path(f.name).suffix.lower(), "📎")} {_link(f.url, f.name)} '
-                 f'<span style="color:{MUTED}">{_size(f.size)}</span>{_badge(f.status)}</li>' for f in files]
+                 f'<span style="color:{MUTED}">{_size(f.size)}</span>{_badge(f.status)}'
+                 f'{_file_summary(f) if summaries else ""}</li>' for f in files]
         if items:
             line += '<ul style="margin:0;padding-left:18px">' + "".join(items) + "</ul>"
-    elif files and m.modname == "resource":
+        return line
+    if files and m.modname == "resource":
         f = files[0]
         line += f' <span style="color:{MUTED}">· {_link(f.url, "download")} {_size(f.size)}</span>'
+    if files and summaries:
+        line += _file_summary(files[0])
     return line
+
+
+def _file_summary(f) -> str:
+    if not f.summary:
+        return ""
+    md = markdown.markdown(f.summary, extensions=["sane_lists"])
+    return (f'<div style="margin:4px 0 8px;padding:4px 12px;background:#f6f8fa;border-radius:4px;'
+            f'font-size:13px">{md}</div>')
 
 
 def _index(digest: Digest) -> list[str]:
