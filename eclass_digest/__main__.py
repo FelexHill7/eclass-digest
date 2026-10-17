@@ -165,7 +165,23 @@ def _run(cfg: Config, args) -> int:
         return _check(cfg, args, state, digest, new_seen, changes, creds)
     if mode == "morning":
         return _morning(cfg, args, state, digest, changes, creds)
-    return _digest(cfg, args, state, digest, new_seen, changes, creds)
+    code = _digest(cfg, args, state, digest, new_seen, changes, creds)
+    if not args.dry_run:
+        _obsidian(cfg, moodle, digest)  # after the email, so a slow AI doesn't delay it
+    return code
+
+
+def _obsidian(cfg: Config, moodle: Moodle, digest: Digest) -> None:
+    """Notes for newly posted lectures, plus a few from the backlog each evening."""
+    if cfg.obsidian_vault is None or not cfg.ai_enabled:
+        return
+    from .obsidian import sync
+
+    try:
+        written = sync(moodle, digest.courses, cfg, limit=cfg.obsidian_max_per_run)
+        log.info("Obsidian: %d new note(s) in %s", len(written), cfg.obsidian_vault)
+    except Exception:
+        log.exception("Writing Obsidian notes failed")
 
 
 def _remember_warned(state: State, digest: Digest, urgent) -> None:
