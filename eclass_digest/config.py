@@ -66,6 +66,12 @@ class Config:
     download_files: bool
     download_dir: Path
 
+    obsidian_vault: Path | None  # None = Obsidian notes off
+    obsidian_folder: str
+    obsidian_match: str
+    obsidian_attach_slides: bool
+    obsidian_max_per_run: int
+
     state_file: Path
     output_dir: Path
     log_dir: Path
@@ -120,6 +126,12 @@ def load_config() -> Config:
         timezone=os.getenv("TIMEZONE", "America/Toronto").strip(),
         download_files=_bool("DOWNLOAD_FILES", False),
         download_dir=_path("DOWNLOAD_DIR", "downloads"),
+        obsidian_vault=_path("OBSIDIAN_VAULT", "") if os.getenv("OBSIDIAN_VAULT", "").strip() else None,
+        obsidian_folder=os.getenv("OBSIDIAN_FOLDER", "eClass").strip() or "eClass",
+        obsidian_match=os.getenv(
+            "OBSIDIAN_MATCH", r"lecture|\blec|slide|notes?\b|week|module|chapter|reading").strip(),
+        obsidian_attach_slides=_bool("OBSIDIAN_ATTACH_SLIDES", True),
+        obsidian_max_per_run=_int("OBSIDIAN_MAX_PER_RUN", 5),
         state_file=_path("STATE_FILE", "state/state.json"),
         output_dir=_path("OUTPUT_DIR", "output"),
         log_dir=_path("LOG_DIR", "logs"),
