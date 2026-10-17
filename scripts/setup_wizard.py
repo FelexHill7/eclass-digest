@@ -230,20 +230,26 @@ use what's sent (your course text) to improve its products. Without a key, every
 # --- 6. First run + schedule --------------------------------------------------
 
 def step_finish() -> None:
-    heading(6, "First digest and daily schedule")
+    heading(6, "First digest and schedule")
     if yes("Send your first digest now?"):
         subprocess.run([sys.executable, "-m", "eclass_digest"], cwd=ROOT)
 
+    print("\nThe schedule: a 'due today' email at 7:30 AM, a check every 2 hours from 9 AM to 9 PM\n"
+          "(emails only when there's a new grade, announcement, file or deadline change), and the\n"
+          "full digest at 8 PM, after profs have posted for the day.")
     if platform.system() == "Windows":
-        if yes("Run it automatically every morning on this PC?"):
-            when = ask("What time? (24h, HH:MM)", "07:00")
+        if yes("Set that up on this PC?"):
+            evening = ask("Evening digest time (24h, HH:MM)", "20:00")
             pythonw = Path(sys.executable).with_name("pythonw.exe")
             subprocess.run(["powershell", "-ExecutionPolicy", "Bypass", "-File",
-                            str(ROOT / "scripts" / "install_task.ps1"), "-Time", when,
+                            str(ROOT / "scripts" / "install_task.ps1"), "-Evening", evening,
                             "-Python", str(pythonw if pythonw.exists() else sys.executable)])
     else:
-        print("\nTo run it every morning at 7, add this line with `crontab -e`:\n"
-              f"  0 7 * * * cd '{ROOT}' && '{sys.executable}' -m eclass_digest\n")
+        run = f"cd '{ROOT}' && '{sys.executable}' -m eclass_digest"
+        print("\nTo set it up, add these lines with `crontab -e`:\n"
+              f"  30 7 * * *          {run} --mode morning\n"
+              f"  0 9-21/2 * * *      {run} --mode check\n"
+              f"  0 20 * * *          {run} --mode digest\n")
 
     print("\nWant it to run in the cloud even when your computer is off? See README:\n"
           "'Run it in the cloud with GitHub Actions' (one command: scripts/push_github_secrets.py).")

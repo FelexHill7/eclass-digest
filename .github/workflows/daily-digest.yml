@@ -1,18 +1,29 @@
-# Runs the digest in the cloud every morning. Off until you turn it on, so copies of this
-# repo don't run by accident. To turn it on in YOUR PRIVATE copy:
+# Runs the digest in the cloud. Off until you turn it on, so copies of this repo don't run by
+# accident. To turn it on in YOUR PRIVATE copy:
 #   python scripts/push_github_secrets.py
 # (or add the secrets below by hand and a repository variable DIGEST_ENABLED=true).
-name: eClass daily digest
+#
+# Times are Toronto daylight time (EDT, UTC-4); in winter (EST) each runs an hour earlier.
+name: eClass digest
 
 on:
   schedule:
-    - cron: "0 11 * * *" # 11:00 UTC = 7 AM Toronto (6 AM in winter)
+    - cron: "30 11 * * *"      # 7:30 AM  morning "due today"
+    - cron: "0 13-23/2 * * *"  # 9 AM - 7 PM every 2 hours: checks
+    - cron: "0 1 * * *"        # 9 PM: last check
+    - cron: "0 0 * * *"        # 8 PM: evening digest
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Which run
+        type: choice
+        options: [digest, check, morning]
+        default: digest
 
 concurrency: eclass-digest
 
 jobs:
-  digest:
+  run:
     if: vars.DIGEST_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -24,6 +35,16 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
 
+      - name: Pick the mode
+        run: |
+          case "${{ github.event.schedule }}" in
+            "30 11 * * *") mode=morning ;;
+            "0 0 * * *")   mode=digest ;;
+            "")            mode="${{ inputs.mode }}" ;;
+            *)             mode=check ;;
+          esac
+          echo "MODE=$mode" >> "$GITHUB_ENV"
+
       # "What I've already seen" lives in the Actions cache between runs.
       - uses: actions/cache/restore@v4
         with:
@@ -31,7 +52,7 @@ jobs:
           key: eclass-state-${{ github.run_id }}
           restore-keys: eclass-state-
 
-      - run: python -m eclass_digest
+      - run: python -m eclass_digest --mode "$MODE"
         env:
           ECLASS_TOKEN: ${{ secrets.ECLASS_TOKEN }}
           DIGEST_TO: ${{ secrets.DIGEST_TO }}
@@ -41,6 +62,8 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GCAL_CALENDAR_ID: ${{ secrets.GCAL_CALENDAR_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          INCLUDE_COURSES: ${{ vars.INCLUDE_COURSES }}
+          EXCLUDE_COURSES: ${{ vars.EXCLUDE_COURSES }}
 
       - uses: actions/cache/save@v4
         if: always()

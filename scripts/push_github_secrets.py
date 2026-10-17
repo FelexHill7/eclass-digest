@@ -61,9 +61,13 @@ def main() -> int:
         r = gh("secret", "set", name, "-R", repo, input=value)  # value goes via stdin, not argv
         print(f"  {'set' if r.returncode == 0 else 'FAILED'}: {name}"
               + ("" if r.returncode == 0 else f" ({r.stderr.strip()})"))
+    for name in ("INCLUDE_COURSES", "EXCLUDE_COURSES"):  # not secret; plain repo variables
+        if env.get(name):
+            gh("variable", "set", name, "-R", repo, "--body", env[name])
+            print(f"  set variable: {name}")
     gh("variable", "set", "DIGEST_ENABLED", "-R", repo, "--body", "true")
-    print(f"\nDone. The workflow now runs daily in {repo}. Start one by hand with:\n"
-          f"  gh workflow run daily-digest.yml -R {repo}")
+    print(f"\nDone. {repo} now runs the morning email, 2-hourly checks and the evening digest.\n"
+          f"Start one by hand with:  gh workflow run daily-digest.yml -R {repo} -f mode=check")
     return 0
 
 
