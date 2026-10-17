@@ -70,6 +70,35 @@ class Event:
     eventtype: str
     modulename: str
     description: str
+    instance: int = 0  # the assignment/quiz id behind the event
+    submission: str = ""  # "submitted" | "draft" | "not submitted" | "" (unknown / not applicable)
+
+    @property
+    def is_deadline(self) -> bool:
+        return self.eventtype in ("due", "close")
+
+    @property
+    def needs_submission(self) -> bool:
+        return self.is_deadline and self.submission in ("not submitted", "draft")
+
+
+@dataclass
+class Grade:
+    id: int
+    name: str
+    grade: str  # as eClass formats it, e.g. "97.00"
+    max: str
+    feedback: str
+    graded: datetime | None
+    url: str
+    status: str = ""  # "new" | "updated" | ""
+
+    @property
+    def display(self) -> str:
+        try:
+            return f"{self.grade} / {float(self.max):g}"
+        except ValueError:
+            return self.grade
 
 
 @dataclass
@@ -80,6 +109,7 @@ class Course:
     url: str
     sections: list[tuple[str, list[Module]]] = field(default_factory=list)
     announcements: list[Announcement] = field(default_factory=list)
+    grades: list[Grade] = field(default_factory=list)
     first_seen: bool = False
 
     @property
@@ -103,13 +133,26 @@ class Digest:
     def fresh_announcements(self) -> list[tuple[Course, Announcement]]:
         return [(c, a) for c in self.courses for a in c.announcements if a.status]
 
-    def upcoming(self, days: int) -> list[Event]:
+    def fresh_grades(self) -> list[tuple[Course, Grade]]:
+        return [(c, g) for c in self.courses for g in c.grades if g.status]
+
+    def upcoming(self, days: float) -> list[Event]:
         end = self.generated + timedelta(days=days)
         return [e for e in self.events if self.generated <= e.start <= end]
 
+    def due_by_end_of(self, days_from_today: int) -> list[Event]:
+        """Deadlines from now until midnight at the end of today (0), tomorrow (1), ..."""
+        end = datetime.combine(self.generated.date() + timedelta(days=days_from_today + 1),
+                               datetime.min.time(), self.generated.tzinfo)
+        return [e for e in self.events if e.is_deadline and self.generated <= e.start < end]
+
+    def urgent(self, hours: int) -> list[Event]:
+        """Deadlines in the next `hours` that you haven't submitted yet."""
+        return [e for e in self.upcoming(hours / 24) if e.needs_submission]
+
     @property
     def has_news(self) -> bool:
-        return bool(self.changed_modules() or self.fresh_announcements())
+        return bool(self.changed_modules() or self.fresh_announcements() or self.fresh_grades())
 
 
 def html_to_text(html: str) -> str:
@@ -341,6 +384,41 @@ def collect(moodle: Moodle, seen: dict, cfg: Config) -> tuple[Digest, dict]:
             course.announcements.append(ann)
         course.announcements.sort(key=lambda a: a.posted, reverse=True)
 
+    # --- Grades and feedback ---------------------------------------------------
+    seen_grades = seen.get("grades", {})
+    new_seen["grades"] = dict(seen_grades)
+    user_id = moodle.user_id if moodle.user_id is not None else moodle.site_info()["userid"]
+    for course in courses.values():
+        try:
+            items = moodle.grade_items(course.id, user_id)
+        except (MoodleError, OSError) as e:
+            log.info("No grades for %s: %s", course.shortname, e)
+            continue
+        for it in items:
+            if it.get("itemtype") in ("course", "category") or it.get("gradeishidden"):
+                continue
+            value = (it.get("gradeformatted") or "").strip()
+            feedback = html_to_text(it.get("feedback") or "")
+            signature = f"{value}|{feedback}"
+            key = str(it["id"])
+            prev = seen_grades.get(key)
+            new_seen["grades"][key] = signature
+            if value in ("", "-") and not feedback:
+                continue  # not graded yet
+            module = it.get("itemmodule")
+            url = (f"{moodle.base}/mod/{module}/view.php?id={it['cmid']}" if module and it.get("cmid")
+                   else f"{moodle.base}/grade/report/user/index.php?id={course.id}")
+            graded = it.get("gradedategraded")
+            grade = Grade(id=it["id"], name=_clean(it.get("itemname")) or "(grade item)", grade=value,
+                          max=str(it.get("grademax") or ""), feedback=feedback, url=url,
+                          graded=datetime.fromtimestamp(graded, tz) if graded else None)
+            # A course seen for the first time, or a first look at grades at all, is a baseline.
+            if not course.first_seen and seen_grades and signature != prev:
+                was_graded = prev is not None and not prev.startswith(("|", "-|"))
+                grade.status = "updated" if was_graded else "new"
+            course.grades.append(grade)
+        course.grades.sort(key=lambda g: g.graded or now, reverse=True)
+
     # --- Calendar: deadlines, quizzes, exams, course events -----------------
     events: list[Event] = []
     events_ok = True
@@ -375,9 +453,23 @@ def collect(moodle: Moodle, seen: dict, cfg: Config) -> tuple[Digest, dict]:
                 eventtype=ev.get("eventtype", ""),
                 modulename=modname,
                 description=html_to_text(ev.get("description", "")),
+                instance=int(instance or 0),
             )
         )
     events.sort(key=lambda e: e.start)
+
+    # --- Have you submitted the deadlines coming up? -------------------------
+    soon = now + timedelta(days=cfg.deadline_window_days)
+    for ev in events:
+        if not (ev.is_deadline and now <= ev.start <= soon and ev.course_id in courses):
+            continue
+        try:
+            if ev.modulename == "assign" and ev.instance:
+                ev.submission = moodle.assignment_submission(ev.instance)
+            elif ev.modulename == "quiz" and ev.instance:
+                ev.submission = moodle.quiz_submission(ev.instance)
+        except (MoodleError, OSError) as e:
+            log.info("Couldn't check submission for %s: %s", ev.name, e)
 
     digest = Digest(
         generated=now,

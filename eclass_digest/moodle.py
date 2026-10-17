@@ -44,6 +44,7 @@ class Moodle:
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers["User-Agent"] = "eclass-digest/1.0"
+        self.user_id: int | None = None  # filled in by site_info()
 
     def call(self, function: str, **params):
         data = {"wstoken": self.token, "wsfunction": function, "moodlewsrestformat": "json"}
@@ -60,7 +61,9 @@ class Moodle:
     # --- API wrappers -------------------------------------------------------
 
     def site_info(self) -> dict:
-        return self.call("core_webservice_get_site_info")
+        info = self.call("core_webservice_get_site_info")
+        self.user_id = info.get("userid")
+        return info
 
     def courses(self, classification: str = "inprogress") -> list[dict]:
         result = self.call(
@@ -96,6 +99,23 @@ class Moodle:
             },
         )
         return result.get("events", [])
+
+    def grade_items(self, course_id: int, user_id: int) -> list[dict]:
+        result = self.call("gradereport_user_get_grade_items", courseid=course_id, userid=user_id)
+        users = result.get("usergrades") or [{}]
+        return users[0].get("gradeitems", [])
+
+    def assignment_submission(self, assign_id: int) -> str:
+        """ "submitted" | "draft" | "not submitted", or "" if it has no online submission."""
+        last = self.call("mod_assign_get_submission_status", assignid=assign_id).get("lastattempt") or {}
+        if last.get("submissionsenabled") is False:
+            return ""
+        status = (last.get("submission") or last.get("teamsubmission") or {}).get("status")
+        return {"submitted": "submitted", "draft": "draft"}.get(status, "not submitted")
+
+    def quiz_submission(self, quiz_id: int) -> str:
+        result = self.call("mod_quiz_get_user_attempts", quizid=quiz_id, status="finished")
+        return "submitted" if result.get("attempts") else "not submitted"
 
     # --- Files --------------------------------------------------------------
 

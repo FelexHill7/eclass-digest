@@ -43,6 +43,8 @@ class Config:
     email_from: str
     send_if_nothing_new: bool
     notify_calendar_changes: bool
+    due_soon_hours: int
+    morning_send_if_empty: bool
     include_full_index: bool
 
     ai_enabled: bool
@@ -99,6 +101,8 @@ def load_config() -> Config:
         email_from=os.getenv("EMAIL_FROM", "") or os.getenv("SMTP_USER", ""),
         send_if_nothing_new=_bool("SEND_IF_NOTHING_NEW", True),
         notify_calendar_changes=_bool("NOTIFY_CALENDAR_CHANGES", True),
+        due_soon_hours=_int("DUE_SOON_HOURS", 24),
+        morning_send_if_empty=_bool("MORNING_SEND_IF_EMPTY", False),
         include_full_index=_bool("INCLUDE_FULL_INDEX", True),
         ai_enabled=ai_enabled,
         gemini_api_key=gemini_key,
