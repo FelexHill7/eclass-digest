@@ -106,6 +106,10 @@ def main(argv: list[str] | None = None) -> int:
     except TimeoutError as e:
         log.error("Skipping this run: %s", e)
         return 4
+    except Exception:
+        # Scheduled runs have no console, so make sure a crash ends up in the log file.
+        log.exception("The %s run crashed", args.mode)
+        return 1
 
 
 def _run(cfg: Config, args) -> int:
@@ -131,8 +135,15 @@ def _run(cfg: Config, args) -> int:
     digest, new_seen = collect(moodle, copy.deepcopy(baseline), cfg)
 
     use_ai = mode == "digest" and cfg.ai_enabled and not args.no_ai
-    if use_ai or (mode == "digest" and cfg.download_files):
-        process_files(moodle, digest, cfg, want_text=use_ai)
+    if use_ai or (mode in ("digest", "check") and cfg.download_files and not args.dry_run):
+        process_files(moodle, digest, cfg, want_text=use_ai)  # checks grab new files within 2 h
+    if mode in ("digest", "check") and cfg.include_full_index:
+        from .resources_page import write as write_resources_page
+
+        try:
+            write_resources_page(digest, cfg)
+        except Exception:
+            log.exception("Couldn't write the course resources page")
     if use_ai:
         from .summarize import summarize
 
