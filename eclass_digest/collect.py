@@ -117,6 +117,12 @@ class Course:
     def modules(self) -> list[Module]:
         return [m for _, mods in self.sections for m in mods]
 
+    @property
+    def title(self) -> str:
+        """"LE/CSSD 3131 A - Machine Learning (Fall 2026-2027)" -> "Machine Learning"."""
+        name = self.fullname.split(" - ", 1)[1] if " - " in self.fullname else self.fullname
+        return re.sub(r"\s*\((Fall|Winter|Summer|Year)[^)]*\)\s*$", "", name).strip() or self.shortname
+
 
 @dataclass
 class Digest:

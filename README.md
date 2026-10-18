@@ -100,12 +100,19 @@ Everything is in `.env`, which the wizard writes for you. See [.env.example](.en
 | `NOTIFY_CALENDAR_CHANGES` | `true` | Include deadlines added, moved or removed in the emails |
 | `SEND_IF_NOTHING_NEW` | `true` | Still send the evening digest on quiet days |
 | `MORNING_SEND_IF_EMPTY` | `false` | Send the morning email even when nothing's due |
-| `INCLUDE_FULL_INDEX` | `true` | Add a linked index of every course to each digest |
-| `DOWNLOAD_FILES` | `false` | Keep a copy of every course file in `downloads/` |
+| `INCLUDE_FULL_INDEX` | `true` | One line per course in each digest, plus the `Course resources.html` dropdown page |
+| `DOWNLOAD_FILES` | `false` | Keep a copy of every course file (not recordings) in nested course/unit/week folders |
+| `DOWNLOAD_DIR` | `downloads` | Where those copies go |
 | `ECLASS_URL` | `https://eclass.yorku.ca` | Works with other Moodle sites too |
 
 Command line: `python -m eclass_digest [--mode digest|check|morning] [--dry-run] [--no-email] [--no-calendar] [--no-ai] [--reset]`.
 `--dry-run` saves a preview to `output/` without sending anything.
+
+**Course materials on your computer:** set `DOWNLOAD_FILES=true` (and a `DOWNLOAD_DIR`), then run
+`python scripts/download_materials.py` once. It files everything except recordings as
+`<DOWNLOAD_DIR>/CSSD 3131 - Machine Learning/<unit>/<week>/…`, and the 2-hourly checks add new files after that.
+The same folder gets `Course resources.html`, with a dropdown for each course, unit and week, a search box, and
+links to both eClass and your copies. Emails can't do dropdowns in Gmail, so the digest only lists one line per course.
 
 **Which courses are tracked?** `python scripts/list_courses.py` lists the courses in your digest, any eClass
 won't let you open, and this year's courses that aren't tracked (with how to add them).

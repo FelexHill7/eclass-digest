@@ -101,9 +101,12 @@ class FakeMoodle(Moodle):
 def cfg(monkeypatch, tmp_path):
     monkeypatch.setenv("ECLASS_TOKEN", "x" * 32)
     monkeypatch.setenv("TIMEZONE", "America/Toronto")
-    # Ignore personal course filters from a local .env so tests behave the same everywhere.
+    # Never touch the real folders or personal settings from a local .env: everything a test
+    # writes goes to its own temporary folder, and features that write files start off.
     return dataclasses.replace(load_config(), state_file=tmp_path / "s.json",
-                               include_courses=(), exclude_courses=())
+                               include_courses=(), exclude_courses=(),
+                               download_files=False, download_dir=tmp_path / "downloads",
+                               output_dir=tmp_path / "output", log_dir=tmp_path / "logs")
 
 
 def test_flatten():
@@ -457,3 +460,129 @@ def test_obsidian_note_titles():
         == "Lecture 4 Linear algebra Probability"
     assert note_title(Module(1, "Lecture 2 Intro to ML, Tuesday Sep. 15, 2026", "resource", "u", "M0"), f, 1) \
         == "Lecture 2 Intro to ML"
+def test_downloads_go_in_nested_course_folders_and_skip_recordings(cfg, tmp_path):
+    from eclass_digest.collect import Course, FileItem, Module
+    from eclass_digest.files import download_path, is_recording
+
+    cfg = dataclasses.replace(cfg, download_dir=tmp_path, download_files=True)
+    course = Course(1, "CSSD 3131", "LE/CSSD 3131 A - Machine Learning (Fall 2026-2027)", "u")
+    assert course.title == "Machine Learning"
+    f = FileItem("Lec3: Linear algebra.pdf", "u", "d", "application/pdf", 1, 1)
+    mod = Module(1, "Lecture 3", "resource", "u", "Logic Programming › Week 5")
+    assert download_path(cfg, course, mod, f) == \
+        tmp_path / "CSSD 3131 - Machine Learning" / "Logic Programming" / "Week 5" / "Lec3_ Linear algebra.pdf"
+    folder = Module(2, "Lab files", "folder", "u", "Week 2")
+    g = FileItem("data/train.csv", "u", "d", "text/csv", 1, 1)
+    assert download_path(cfg, course, folder, g) == \
+        tmp_path / "CSSD 3131 - Machine Learning" / "Week 2" / "Lab files" / "data" / "train.csv"
+    assert is_recording(FileItem("Lecture 3.mp4", "u", "d", "", 1, 1))
+    assert is_recording(FileItem("talk", "u", "d", "audio/mpeg", 1, 1))
+    assert not is_recording(f)
+
+
+def test_resources_page_has_dropdowns_and_email_stays_compact(cfg, tmp_path):
+    from eclass_digest import resources_page
+
+    cfg = dataclasses.replace(cfg, download_dir=tmp_path, download_files=True, output_dir=tmp_path)
+    digest, _ = collect(FakeMoodle(), empty_seen(), cfg)
+    course = digest.courses[0]
+    lec = course.modules[1]
+    from eclass_digest.files import DownloadManifest, download_path
+    local = download_path(cfg, course, lec, lec.files[0])
+    local.parent.mkdir(parents=True)
+    local.write_bytes(b"pdf")
+    manifest = DownloadManifest(cfg)
+    manifest.record(course, lec, lec.files[0], local)
+    manifest.save()
+
+    page = resources_page.write(digest, cfg).read_text(encoding="utf-8")
+    assert page.count('<details class="course">') == 1
+    assert "<summary>Week 1" in page and "Lecture 1 slides" in page
+    assert 'href="EECS2030%20-%20Advanced%20OOP/Week%201/lec1.pdf"' in page  # the downloaded copy
+
+    _, html, _ = emailer.render_digest(digest, [], cfg)
+    assert "<details" not in html  # Gmail can't collapse; the email keeps one line per course
+    assert "Course resources.html" in html and "Lecture 1 slides" not in html.split("All course resources")[1]
+
+
+def test_files_are_never_downloaded_twice(cfg, monkeypatch, tmp_path):
+    from eclass_digest import files
+
+    cfg = dataclasses.replace(cfg, download_dir=tmp_path / "dl", download_files=True,
+                              output_dir=tmp_path, ai_enabled=False)
+    moodle = FakeMoodle()
+    guide = lambda cmid, week, url: {  # noqa: E731
+        "id": cmid, "name": "Lab guidelines", "modname": "resource", "instance": cmid,
+        "url": f"{BASE}/mod/resource/view.php?id={cmid}",
+        "contents": [{"type": "file", "filename": "guidelines.pdf", "filepath": "/", "fileurl": pluginfile(url),
+                      "filesize": 7, "timemodified": NOW}]}
+    moodle.contents[1]["modules"] += [guide(301, 2, "1/a/guidelines.pdf"), guide(302, 3, "2/b/guidelines.pdf")]
+    moodle.contents[1]["modules"].append(
+        {"id": 303, "name": "Renamed copy", "modname": "resource", "instance": 303,
+         "url": f"{BASE}/mod/resource/view.php?id=303",
+         "contents": [{"type": "file", "filename": "lec1-copy.pdf", "filepath": "/",
+                       "fileurl": pluginfile("3/c/lec1-copy.pdf"), "filesize": 99, "timemodified": NOW}]})
+    downloads = []
+
+    def fake_download(self, url, max_bytes):
+        downloads.append(url.split("/")[-1].split("?")[0])
+        return b"LECTURE1" if "lec1" in url else b"GUIDE!!"
+
+    monkeypatch.setattr(Moodle, "download", fake_download)
+    digest, seen = collect(moodle, empty_seen(), cfg)
+    files.process_files(moodle, digest, cfg, want_text=False)
+    # guidelines.pdf posted twice (same name + size): fetched once. The renamed copy of lec1.pdf
+    # has to be fetched to know, but identical bytes aren't stored twice.
+    assert sorted(downloads) == ["guidelines.pdf", "lec1-copy.pdf", "lec1.pdf"]
+    stored = sorted(p.name for p in (tmp_path / "dl").rglob("*.pdf"))
+    assert stored == ["guidelines.pdf", "lec1.pdf"]
+
+    # The 2-hourly check and the evening digest both see the files as "new": no second download.
+    for m in digest.courses[0].modules:
+        for f in m.files:
+            f.status = "new"
+    downloads.clear()
+    files.process_files(moodle, digest, cfg, want_text=False)
+    digest2, _ = collect(moodle, seen, cfg)
+    files.process_files(moodle, digest2, cfg, want_text=False)
+    assert downloads == []
+
+    # The prof uploads a new version of the slides: that one is fetched again.
+    moodle.contents[1]["modules"][0]["contents"][0]["timemodified"] = NOW + 60
+    digest3, _ = collect(moodle, seen, cfg)
+    files.process_files(moodle, digest3, cfg, want_text=False)
+    assert downloads == ["lec1.pdf"]
+
+
+def test_files_already_on_disk_are_adopted_without_downloading(cfg, monkeypatch, tmp_path):
+    from eclass_digest import files
+
+    cfg = dataclasses.replace(cfg, download_dir=tmp_path, download_files=True, output_dir=tmp_path,
+                              ai_enabled=False)
+    moodle = FakeMoodle()
+    digest, _ = collect(moodle, empty_seen(), cfg)
+    course, lec = digest.courses[0], digest.courses[0].modules[1]
+    path = files.download_path(cfg, course, lec, lec.files[0])
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"x" * lec.files[0].size)  # e.g. from before the manifest existed
+    monkeypatch.setattr(Moodle, "download", lambda *a: pytest.fail("shouldn't download"))
+    files.process_files(moodle, digest, cfg, want_text=False)
+    assert files.DownloadManifest(cfg).is_current(lec, lec.files[0])
+
+
+def test_obsidian_uses_the_downloaded_copy(cfg, monkeypatch, tmp_path):
+    from eclass_digest import ai, files, obsidian
+
+    cfg = dataclasses.replace(cfg, obsidian_vault=tmp_path / "vault", obsidian_match="slide",
+                              download_files=True, download_dir=tmp_path / "dl", ai_enabled=False)
+    moodle = FakeMoodle()
+    digest, _ = collect(moodle, empty_seen(), cfg)
+    monkeypatch.setattr(Moodle, "download", lambda self, url, max_bytes: b"%PDF-1.4 slides")
+    files.process_files(moodle, digest, cfg, want_text=False)  # the digest downloads it once
+
+    monkeypatch.setattr(Moodle, "download", lambda *a: pytest.fail("should reuse the local copy"))
+    seen = []
+    monkeypatch.setattr(ai, "generate",
+                        lambda cfg, parts, system="": seen.append(parts[0]["data"]) or ai.Result("ok", 1, 1, "x"))
+    assert obsidian.sync(moodle, digest.courses, cfg)
+    assert seen == [b"%PDF-1.4 slides"]

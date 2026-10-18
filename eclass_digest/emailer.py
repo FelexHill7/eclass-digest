@@ -246,26 +246,25 @@ def _file_summary(f) -> str:
             f'font-size:13px">{md}</div>')
 
 
-def _index(digest: Digest) -> list[str]:
-    h = [_h2("All course resources")]
+def _index(digest: Digest, cfg: Config) -> list[str]:
+    """One line per course. Gmail can't collapse sections, so the full list with dropdowns lives
+    in the "Course resources.html" page saved next to the downloads."""
+    from .resources_page import page_path
+
+    h = [_h2("All course resources"), '<table style="border-collapse:collapse;width:100%">']
     for course in digest.courses:
-        h.append(f'<h3 style="font-size:15px;margin:18px 0 2px">{_link(course.url, course.shortname)}'
-                 f'</h3><div style="color:{MUTED};font-size:12px">{escape(course.fullname)}</div>')
-        if course.announcements:
-            h.append('<div style="margin:6px 0 0"><b>Recent announcements</b></div>'
-                     '<ul style="margin:0;padding-left:20px">')
-            h.extend(f'<li>{_link(a.url, a.subject)} <span style="color:{MUTED}">· {a.posted:%b %d}</span></li>'
-                     for a in course.announcements[:5])
-            h.append("</ul>")
-        if course.grades:
-            h.append('<div style="margin:6px 0 0"><b>Grades</b></div><ul style="margin:0;padding-left:20px">')
-            h.extend(f'<li>{_link(g.url, g.name)}: {escape(g.display)}</li>' for g in course.grades)
-            h.append("</ul>")
-        for section, mods in course.sections:
-            h.append(f'<div style="margin:8px 0 0"><b>{escape(section)}</b></div>'
-                     f'<ul style="margin:0;padding-left:20px">')
-            h.extend(f"<li>{_module_line(m)}</li>" for m in mods)
-            h.append("</ul>")
+        files = sum(len(m.files) for m in course.modules if m.modname != "page")
+        graded = len(course.grades)
+        meta = f"{len(course.modules)} items · {files} files" + (f" · {graded} graded" if graded else "")
+        h.append(f'<tr style="border-bottom:1px solid #eee">'
+                 f'<td style="padding:6px 12px 6px 0;width:1%;white-space:nowrap;font-weight:600">'
+                 f'{_link(course.url, course.shortname)}</td>'
+                 f'<td style="padding:6px 12px 6px 0">{escape(course.title)}</td>'
+                 f'<td style="padding:6px 0;color:{MUTED};font-size:12px;white-space:nowrap;text-align:right">'
+                 f'{meta}</td></tr>')
+    h.append("</table>")
+    h.append(f'<p style="color:{MUTED};font-size:12px">Everything, with a dropdown per course, unit '
+             f'and week (and links to your downloaded copies): <b>{escape(str(page_path(cfg)))}</b></p>')
     return h
 
 
@@ -319,7 +318,7 @@ def render_digest(digest: Digest, changes, cfg: Config) -> tuple[str, str, str]:
     h.append(_h2(f"Coming up (next {cfg.deadline_window_days} days)"))
     h += _deadline_table(later, now, cfg) if later else [f'<p style="color:{MUTED}">Nothing else due.</p>']
     if cfg.include_full_index:
-        h += _index(digest)
+        h += _index(digest, cfg)
 
     parts = []
     if urgent:
