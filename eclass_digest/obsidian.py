@@ -194,7 +194,10 @@ def sync(moodle: Moodle, courses: list[Course], cfg: Config, limit: int | None =
          force: bool = False) -> list[Path]:
     """Write notes for lecture files that don't have a current one yet. Newest first, so freshly
     posted slides are done before an older backlog; `limit` caps how many per run."""
+    from .files import DownloadManifest
+
     vault = Vault(cfg)
+    downloads = DownloadManifest(cfg) if cfg.download_files else None
     now = datetime.now()
     todo = [(c, o, m, f, n) for c in courses for o, m, f, n in lecture_files(c, cfg.obsidian_match)
             if force or not vault.is_current(f)]
@@ -203,7 +206,11 @@ def sync(moodle: Moodle, courses: list[Course], cfg: Config, limit: int | None =
     for course, order, module, f, n in todo[:limit]:
         title = note_title(module, f, n)
         try:
-            data = moodle.download(f.download_url, MAX_FILE_BYTES)
+            # Use the copy in DOWNLOAD_DIR when it's the current version, instead of fetching again.
+            if downloads is not None and downloads.is_current(module, f):
+                data = downloads.local_path(module, f).read_bytes()
+            else:
+                data = moodle.download(f.download_url, MAX_FILE_BYTES)
             body = _generate(cfg, course, module, f, title, data)
         except Exception as e:  # one lecture failing shouldn't stop the rest
             log.warning("No Obsidian note for %s: %s", title, e)
